@@ -1,0 +1,51 @@
+diff --git a/include/configs/zynq-common.h b/include/configs/zynq-common.h
+index 9765ca4a080..ae19396fa72 100644
+--- a/include/configs/zynq-common.h
++++ b/include/configs/zynq-common.h
+@@ -233,6 +233,9 @@
+ /* Default environment */
+ #ifndef CONFIG_EXTRA_ENV_SETTINGS
+ #define CONFIG_EXTRA_ENV_SETTINGS	\
++	"attr_name=compatible\0" \
++	"attr_val=ad9361\0" \
++	"compatible=ad9361\0" \
+ 	"ethaddr=00:0a:35:00:01:22\0"	\
+ 	"ipaddr=192.168.2.1\0"	\
+ 	"ipaddr_host=192.168.2.10\0"	\
+@@ -286,10 +289,6 @@
+ 		"if test \"${refclk_source}\" = \"external\" && test \"${model}\" = \"Analog Devices PlutoSDR Rev.C (Z7010/AD9363)\" ; then " \
+ 			"fdt rm /amba/gpio@e000a000/clock_internal_en || fdt rm /axi/gpio@e000a000/clock_internal_en; " \
+ 		"fi; " \
+-		"if test  \"${attr_val}\" = \"ad9361\" && test ! \"${model}\" = \"Analog Devices PlutoSDR Rev.C (Z7010/AD9363)\" ; then " \
+-			"setenv attr_val ad9363a; " \
+-			"saveenv; " \
+-		"fi; " \
+ 		"if test -n \"${attr_val}\" && test ! \"${attr_val}\" = \"ad9361\" && test ! \"${attr_val}\" = \"ad9363a\" && test ! \"${attr_val}\" = \"ad9364\"; then " \
+ 			"setenv attr_val ad9363a; " \
+ 			"saveenv; " \
+@@ -333,14 +332,14 @@
+ 		"if run adi_loadvals; then " \
+ 		"echo Loaded AD936x refclk frequency and model into devicetree; " \
+ 		"fi; " \
+-		"envversion;setenv bootargs console=ttyPS0,115200 maxcpus=${maxcpus} rootfstype=ramfs root=/dev/ram0 rw earlyprintk clk_ignore_unused uboot=\"${uboot-version}\" && " \
++		"envversion;setenv bootargs console=ttyPS0,115200 maxcpus=${maxcpus} rootfstype=ramfs root=/dev/ram0 rw earlyprintk clk_ignore_unused uio_pdrv_genirq.of_id=generic-uio uboot=\"${uboot-version}\" && " \
+ 		"bootm ${fit_load_address}#${fit_config}\0" \
+ 	"qspiboot_verbose=adi_hwref;echo Copying Linux from QSPI flash to RAM... && " \
+ 		"run read_sf && " \
+ 		"if run adi_loadvals; then " \
+ 		"echo Loaded AD936x refclk frequency and model into devicetree; " \
+ 		"fi; " \
+-		"envversion;setenv bootargs console=ttyPS0,115200 maxcpus=${maxcpus} rootfstype=ramfs root=/dev/ram0 rw earlyprintk clk_ignore_unused uboot=\"${uboot-version}\" && " \
++		"envversion;setenv bootargs console=ttyPS0,115200 maxcpus=${maxcpus} rootfstype=ramfs root=/dev/ram0 rw earlyprintk clk_ignore_unused uio_pdrv_genirq.of_id=generic-uio uboot=\"${uboot-version}\" && " \
+ 		"bootm ${fit_load_address}#${fit_config} || echo BOOT failed entering DFU mode ... && run dfu_sf \0" \
+ 	"qspiboot=set stdout nulldev;adi_hwref;test -n $PlutoRevA || gpio input 14 && set stdout serial@e0001000 && sf probe && sf protect lock 0 100000 && run dfu_sf;  " \
+ 		"set stdout serial@e0001000;" \
+@@ -350,7 +349,7 @@
+ 		"itest *f8000258 == 480002 && run clear_reset_cause && exit; " \
+ 		"echo Booting silently && set stdout nulldev; " \
+ 		"run read_sf && run adi_loadvals; " \
+-		"envversion;setenv bootargs console=ttyPS0,115200 maxcpus=${maxcpus} rootfstype=ramfs root=/dev/ram0 rw quiet loglevel=4 clk_ignore_unused uboot=\"${uboot-version}\" && " \
++		"envversion;setenv bootargs console=ttyPS0,115200 maxcpus=${maxcpus} rootfstype=ramfs root=/dev/ram0 rw quiet loglevel=4 clk_ignore_unused uio_pdrv_genirq.of_id=generic-uio uboot=\"${uboot-version}\" && " \
+ 		"bootm ${fit_load_address}#${fit_config} || set stdout serial@e0001000;echo BOOT failed entering DFU mode ... && sf protect lock 0 100000 && run dfu_sf \0" \
+ 	"jtagboot=env default -a;sf probe && sf protect unlock 0 100000 && run dfu_sf; \0" \
+ 	"uenvboot=" \

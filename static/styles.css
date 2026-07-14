@@ -1,0 +1,324 @@
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+  margin: 0;
+  padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.container {
+  width: 100%;
+  max-width: 1200px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+  color: #ffffff;
+}
+
+#status {
+  font-size: 14px;
+  font-weight: bold;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background-color: #333;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 15px;
+  background-color: #2d2d2d;
+  padding: 10px 15px;
+  border-radius: 6px;
+  border: 1px solid #3c3c3c;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+label {
+  font-size: 14px;
+  color: #cccccc;
+}
+
+button,
+select,
+input[type="number"],
+input[type="text"] {
+  background-color: #3c3c3c;
+  color: #ffffff;
+  border: 1px solid #555555;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+button {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+button:hover:not(:disabled) {
+  background-color: #505050;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input[type="number"] {
+  width: 110px;
+}
+
+#filter-bw {
+  width: 80px;
+}
+
+.waterfall-container {
+  position: relative;
+  width: 100%;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: #000;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 400px;
+    cursor: crosshair;
+  }
+  
+  #hover-tooltip {
+    position: absolute;
+    background: rgba(0, 0, 0, 0.85);
+    color: #ffffff;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: monospace;
+    display: none;
+    pointer-events: none;
+    z-index: 10;
+    border: 1px solid #555;
+  }
+  
+  input[type="range"] {
+    vertical-align: middle;
+}
+
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #2d2d2d;
+  padding: 8px 15px;
+  border-radius: 6px;
+  border: 1px solid #3c3c3c;
+  font-size: 13px;
+  color: #aaa;
+  margin-top: 5px;
+}
+
+.tx-status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #242424;
+  padding: 8px 15px;
+  border-radius: 6px;
+  border: 1px solid #3c3c3c;
+  font-size: 13px;
+  color: #aaa;
+  margin-top: 5px;
+}
+
+/* --- Utilities --- */
+.push-right {
+  margin-left: auto;
+}
+
+.ml-5 {
+  margin-left: 5px;
+}
+
+.ml-15 {
+  margin-left: 15px;
+}
+
+.ml-20 {
+  margin-left: 20px;
+}
+
+.mb-20 {
+  margin-bottom: 20px;
+}
+
+.strong {
+  font-weight: bold;
+}
+
+/* Numeric readout next to a range slider */
+.readout {
+  display: inline-block;
+  min-width: 65px;
+}
+
+#rx-gain-val {
+  min-width: 60px;
+}
+
+#tx-gain-val {
+  min-width: 75px;
+}
+
+#rf-bandwidth {
+  width: 100px;
+}
+
+#tx-filter-bw {
+  width: 85px;
+}
+
+/* --- Sync toggle (checkbox + label), reused for RF-BW and RX/TX sync --- */
+.sync-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sync-checkbox {
+  cursor: pointer;
+  margin: 0;
+  transform: scale(1.1);
+}
+
+.sync-label {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  user-select: none;
+}
+
+/* --- Transmit controls block --- */
+.tx-controls {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.tx-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.tx-row-group {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+
+.tx-row-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  gap: 15px;
+  border-top: 1px solid #3c3c3c;
+  padding-top: 8px;
+}
+
+.tx-badge {
+  font-size: 14px;
+  font-weight: bold;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background-color: #333;
+  min-width: 80px;
+  text-align: center;
+}
+
+.run-badge {
+  min-width: 90px;
+  text-align: center;
+  font-weight: bold;
+  background-color: #555555;
+  border-color: #777777;
+}
+
+.run-badge.is-running {
+  background-color: #1b5e20;
+  border-color: #4caf50;
+  color: #ffffff;
+}
+
+.run-badge.is-stopped {
+  background-color: #4a1414;
+  border-color: #f44336;
+  color: #ffffff;
+}
+
+#tx-file {
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  max-width: 200px;
+}
+
+#tx-file-confirm {
+  display: none;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+/* --- Status bars --- */
+.status-row {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+
+.tx-val {
+  color: #ff5599;
+}
+
+.status-val {
+  color: #ffffff;
+}
+
+.diag-label {
+  color: #aaa;
+  font-weight: bold;
+}
+
+#telemetry-vccint-span,
+#telemetry-vccoddr-span {
+  display: none;
+}
+

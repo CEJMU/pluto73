@@ -1,0 +1,4 @@
+[submodule "plutoplus"]
+	path = plutoplus
+	url = https://github.com/plutoplus/plutoplus.git
+	branch = latest

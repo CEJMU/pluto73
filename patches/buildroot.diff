@@ -1,0 +1,71 @@
+diff --git a/board/pluto/motd b/board/pluto/motd
+index 55601033c6..4c917e64be 100644
+--- a/board/pluto/motd
++++ b/board/pluto/motd
+@@ -6,4 +6,4 @@ Welcome to:
+ |_|   |_|\__,_|\__\___/  |_|
+ 
+ #BUILD#
+-https://github.com/plutoplus/plutoplus
++https://github.com/CEJMU/pluto73
+diff --git a/board/pluto/post-build.sh b/board/pluto/post-build.sh
+index 03021a4918..9878d8bd92 100755
+--- a/board/pluto/post-build.sh
++++ b/board/pluto/post-build.sh
+@@ -91,3 +91,32 @@ ln -sf ../../wpa_supplicant/ifupdown.sh ${TARGET_DIR}/etc/network/if-pre-up.d/wp
+ ln -sf ../../wpa_supplicant/ifupdown.sh ${TARGET_DIR}/etc/network/if-post-down.d/wpasupplicant
+ 
+ ln -sf device_reboot ${TARGET_DIR}/usr/sbin/pluto_reboot
++
++# ---------------------------------------------------------------------------
++# Custom Pluto SSB transceiver app  --  baked into /opt/pluto when it has been
++# cross-compiled (top-level `make bake` / `make all`). Guarded on the binary
++# existing so a plain `make firmware` (no app built yet) still succeeds.
++# BOARD_DIR = <repo>/plutoplus/plutosdr-fw/buildroot/board/pluto -> repo is 5 up.
++# ---------------------------------------------------------------------------
++REPO_ROOT="$(cd ${BOARD_DIR}/../../../../.. && pwd)"
++APP_BIN="${REPO_ROOT}/target/armv7-unknown-linux-gnueabihf/release/pluto"
++if [ -x "${APP_BIN}" ]; then
++	${INSTALL} -D -m 0755 ${APP_BIN} ${TARGET_DIR}/opt/pluto/pluto
++	mkdir -p ${TARGET_DIR}/opt/pluto/static
++	cp -a ${REPO_ROOT}/static/. ${TARGET_DIR}/opt/pluto/static/
++	# TLS certs: bake them in if present (from `make certs` or user-supplied); the app
++	# falls back to HTTP-only when absent.
++	[ -f ${REPO_ROOT}/cert.pem ] && ${INSTALL} -D -m 0644 ${REPO_ROOT}/cert.pem ${TARGET_DIR}/opt/pluto/cert.pem
++	[ -f ${REPO_ROOT}/key.pem ]  && ${INSTALL} -D -m 0600 ${REPO_ROOT}/key.pem  ${TARGET_DIR}/opt/pluto/key.pem
++	# Autostart on boot; cd into /opt/pluto so cert.pem/key.pem and static/ resolve.
++	cat > ${TARGET_DIR}/etc/init.d/S99pluto <<'PLUTOEOF'
++#!/bin/sh
++case "$1" in
++  start) cd /opt/pluto && ./pluto >/var/log/pluto.log 2>&1 & ;;
++  stop)  killall pluto 2>/dev/null ;;
++  restart) "$0" stop; "$0" start ;;
++  *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
++esac
++PLUTOEOF
++	chmod 0755 ${TARGET_DIR}/etc/init.d/S99pluto
++fi
+diff --git a/package/ad936x_ref_cal/ad936x_ref_cal.hash b/package/ad936x_ref_cal/ad936x_ref_cal.hash
+index 63a7bcbc27..7a3b805a89 100644
+--- a/package/ad936x_ref_cal/ad936x_ref_cal.hash
++++ b/package/ad936x_ref_cal/ad936x_ref_cal.hash
+@@ -1,5 +1,5 @@
+ # Locally computed
+-sha256 08d144bf3e5c729ec00bd016d1eb529fd7c8f2e46a1740f12cc3afc3989c1419 ad936x_ref_cal-origin_master-br1.tar.gz
++sha256 352a33033c0b7d78ad2d381f25fee957bc17ba555f83b41faab2f77e2ac0566d ad936x_ref_cal-7eaf3f65f92b38a6ef6a5f04a84e94a6b24d1bc7-br1.tar.gz
+ 
+ # License files (locally computed as well)
+ sha256 8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643 LICENSE
+diff --git a/package/ad936x_ref_cal/ad936x_ref_cal.mk b/package/ad936x_ref_cal/ad936x_ref_cal.mk
+index 72593ccb10..abbaafe2c2 100644
+--- a/package/ad936x_ref_cal/ad936x_ref_cal.mk
++++ b/package/ad936x_ref_cal/ad936x_ref_cal.mk
+@@ -5,7 +5,7 @@
+ ################################################################################
+ 
+ 
+-AD936X_REF_CAL_VERSION = origin/master  
++AD936X_REF_CAL_VERSION = 7eaf3f65f92b38a6ef6a5f04a84e94a6b24d1bc7
+ AD936X_REF_CAL_SITE = https://github.com/analogdevicesinc/plutosdr_scripts.git
+ AD936X_REF_CAL_SITE_METHOD = git
+ AD936X_REF_CAL_LICENSE = GPLv2
