@@ -152,6 +152,7 @@ pub struct PlutoSystem {
     pub tx_antenna: u8,
     pub tx_cic_interpolation: u32,
     pub tx_phase_inc: u32,
+    pub tx_dds_offset_hz: f64,
 
     pub is_configuring: bool,
     pub dma_running: bool,
@@ -893,7 +894,8 @@ impl PlutoSystem {
     }
 
     /// Computes the TX FPGA DSP rates for `tx_fs`, resets the pipeline to lock in the
-    /// interpolation rate/antenna/strobe rate, and tunes the TX DDS Compiler offset to +50 kHz to avoid the center DC spike.
+    /// interpolation rate/antenna/strobe rate, and tunes the TX DDS Compiler to the configured
+    /// offset (`tx_dds_offset_hz`, default +50 kHz) to avoid the center DC spike.
     /// Returns the rounded TX sample rate and the CIC interpolation factor.
     pub fn tx_apply_dsp_config(&mut self, tx_antenna: u8, tx_fs: f64) -> (f64, u32) {
         let rounded_tx_fs = tx_rounded_fs(tx_fs);
@@ -921,8 +923,8 @@ impl PlutoSystem {
             cic_interpolation, tx_antenna
         );
 
-        // Configure the TX DDS Compiler frequency offset dynamically to +50 kHz
-        self.tx_set_dds(50_000.0, rounded_tx_fs * 2.0);
+        // Configure the TX DDS Compiler to the configured frequency offset (default +50 kHz)
+        self.tx_set_dds(self.tx_dds_offset_hz, rounded_tx_fs * 2.0);
 
         (rounded_tx_fs, cic_interpolation)
     }
@@ -1248,6 +1250,7 @@ fn init_mem_system() -> Result<PlutoSystem, Box<dyn std::error::Error>> {
         tx_antenna: 0,
         tx_cic_interpolation: 0,
         tx_phase_inc: 0,
+        tx_dds_offset_hz: 50_000.0,
         is_configuring: false,
         dma_running: false,
         ping_pong: false,

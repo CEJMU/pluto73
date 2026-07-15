@@ -32,7 +32,7 @@ export function formatHzToMsps(hz) {
 }
 
 export function formatHzShort(hz) {
-  if (hz >= 1000) {
+  if (Math.abs(hz) >= 1000) {
     return (hz / 1000).toFixed(1) + ' kHz';
   } else {
     return hz.toFixed(0) + ' Hz';

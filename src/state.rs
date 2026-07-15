@@ -53,6 +53,7 @@ pub struct ControlState {
     pub rx_gain_mode: GainMode,
     pub rx_gain_db: f64,
     pub rf_bandwidth_hz: i64,
+    pub tx_offset_hz: i64,
     /// When set, the wideband waterfall burst is also streamed to clients as raw i16 I/Q. Opt-in
     /// (off by default) so the normal web UI pays no bandwidth cost; enabled by `SetRxIqStream`.
     pub iq_stream_enabled: bool,
@@ -71,6 +72,7 @@ impl ControlState {
             rx_gain_mode: GainMode::AgcSlow,
             rx_gain_db: 30.0,
             rf_bandwidth_hz: crate::MIN_SPAN_FM,
+            tx_offset_hz: 50_000,
             iq_stream_enabled: false,
         }
     }

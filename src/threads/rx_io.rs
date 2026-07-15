@@ -28,9 +28,8 @@ pub enum IoCommand {
     SetRxGain(f64),
     SetTxGain(f64),
     SetRfBandwidth(i64),
-    /// Keeps the TX LO following the listening frequency while TX is active (e.g. on plain
-    /// `SetRxFrequency` retunes, which otherwise never reach the TX thread). No-op if TX is off.
     SetTxPlaybackFrequency(i64),
+    SetTxOffset { offset_hz: i64, playback_hz: i64 },
 }
 
 pub fn spawn_rx_io_thread(
@@ -50,6 +49,7 @@ pub fn spawn_rx_io_thread(
         // --- Thread state ---
         let mut is_tx_active = false;
         let mut current_tx_lo = 0i64;
+        let mut tx_offset_hz = 50_000i64;
         let mut last_telemetry_time = Instant::now();
         let mut actual_span = initial_fs_hz;
 
@@ -79,7 +79,26 @@ pub fn spawn_rx_io_thread(
                 // every time the listening frequency moves.
                 if let IoCommand::SetTxPlaybackFrequency(playback_hz) = cmd {
                     if is_tx_active {
-                        current_tx_lo = playback_hz - 50_000;
+                        current_tx_lo = playback_hz - tx_offset_hz;
+                        let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
+                            lo_hz: current_tx_lo,
+                            fs_hz: actual_span,
+                        });
+                    }
+                } else if let IoCommand::SetTxOffset {
+                    offset_hz,
+                    playback_hz,
+                } = cmd
+                {
+                    tx_offset_hz = offset_hz;
+                    // Store the offset in the FPGA register shadow; `tx_apply_dsp_config`
+                    // (re)programs the DDS from it on every SetTxFrequencies / rate change.
+                    {
+                        let mut sys = system.lock().unwrap();
+                        sys.tx_dds_offset_hz = offset_hz as f64;
+                    }
+                    if is_tx_active {
+                        current_tx_lo = playback_hz - tx_offset_hz;
                         let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
                             lo_hz: current_tx_lo,
                             fs_hz: actual_span,
@@ -163,13 +182,13 @@ pub fn spawn_rx_io_thread(
                                 // Apply the user's chosen TX gain before enabling the transmitter.
                                 let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxGain(tx_gain_db));
 
-                                // TX LO is tuned 50 kHz below playback_hz. The FPGA TX DDS (fixed
-                                // +50 kHz offset, see `tx_apply_dsp_config`) then shifts the
+                                // TX LO is tuned `tx_offset_hz` below playback_hz. The FPGA TX DDS
+                                // (same offset, see `tx_apply_dsp_config`) then shifts the
                                 // modulated baseband back up by exactly that amount, so the
                                 // transmitted signal lands precisely at playback_hz and the user
                                 // can hear themselves when monitoring. TxModulator's own NCO is
                                 // disabled (rf_offset_hz = 0.0, see tx_dsp.rs) to avoid double-shifting.
-                                current_tx_lo = playback_hz - 50_000;
+                                current_tx_lo = playback_hz - tx_offset_hz;
                                 let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
                                     lo_hz: current_tx_lo,
                                     fs_hz: actual_span,
@@ -215,6 +234,7 @@ pub fn spawn_rx_io_thread(
                         }
                         // Already handled
                         IoCommand::SetTxPlaybackFrequency(_) => unreachable!(),
+                        IoCommand::SetTxOffset { .. } => unreachable!(),
                     }
 
                     // Tell the TX IO thread configuration is done and it can recreate the TX buffer

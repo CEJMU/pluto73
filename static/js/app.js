@@ -25,6 +25,7 @@ const hoverTooltip = document.getElementById('hover-tooltip');
 // TX Mode/Bandwidth selectors (read by the status bar; controls live in tx.js)
 const txModeSelect = document.getElementById('tx-mode-select');
 const txFilterBwInput = document.getElementById('tx-filter-bw');
+const txOffsetInput = document.getElementById('tx-offset');
 
 const rxGainModeSelect = document.getElementById('rx-gain-mode');
 const rxGainSlider = document.getElementById('rx-gain');
@@ -57,6 +58,7 @@ const txStatusModeVal = document.getElementById('tx-status-mode-val');
 const txStatusBwVal = document.getElementById('tx-status-bw-val');
 const txStatusRateVal = document.getElementById('tx-status-rate-val');
 const txStatusLoVal = document.getElementById('tx-status-lo-val');
+const txStatusOffsetVal = document.getElementById('tx-status-offset-val');
 const txStatusGainVal = document.getElementById('tx-status-gain-val');
 
 // --- Global Application State ---
@@ -80,13 +82,28 @@ let isWaitingForHardware = false;        // Blocks rendering during tuning to av
 let currentMode = 'FM';
 let currentFilterBw = 15000;
 
+// TX DDS offset: the TX LO sits this far below the listening frequency; the FPGA DDS shifts
+// the signal back up. Keeps TX LO leakage (carrier spike) away from the transmitted signal.
+let txOffsetHz = 50000;
+
+// Largest usable TX offset at the current rate: the TX sample rate follows the RX hardware
+// span and the analog TX bandwidth equals that rate, so the shifted signal must stay within
+// +-fs/2 (20 kHz margin covers the widest TX filter). Mirrors max_tx_offset() in the backend.
+function maxTxOffsetHz() {
+  return sdrBandwidthHz / 2 - 20000;
+}
+
+function clampTxOffset(hz) {
+  const limit = maxTxOffsetHz();
+  return Math.max(-limit, Math.min(limit, hz));
+}
+
 // Dragging Interactions
 let isDragging = false;
 let dragMoved = false;
 let dragStartX = 0;
 let dragStartCenterHz = 0;
-let dragStartHardwareLoHz = 0;
-let isDraggingBar = false;               // Track dragging: 'carrier', 'left', 'right', 'lo', or false
+let isDraggingBar = false;               // Track dragging: 'carrier', 'left', 'right', 'lo', 'txlo', or false
 let dragBarMoved = false;
 let filterBwTimeout = null;
 
@@ -161,10 +178,14 @@ function updateStatusBar() {
     txStatusRateVal.textContent = '48.00 kHz';
   }
   if (txStatusLoVal && !Number.isNaN(listeningHz)) {
-    // TX LO hardware sits 50 kHz below playback_hz; the FPGA TX DDS (fixed +50 kHz offset)
-    // brings the signal back up to playback_hz.
-    const txLoMhz = (listeningHz - 50000) / 1000000;
+    // TX LO hardware sits txOffsetHz below playback_hz; the FPGA TX DDS brings the signal
+    // back up to playback_hz.
+    const txLoMhz = (listeningHz - txOffsetHz) / 1000000;
     txStatusLoVal.textContent = txLoMhz.toFixed(6) + ' MHz';
+  }
+  if (txStatusOffsetVal) {
+    const sign = txOffsetHz >= 0 ? '+' : '';
+    txStatusOffsetVal.textContent = `${sign}${formatHzShort(txOffsetHz)} (FPGA DDS)`;
   }
   if (txStatusGainVal && txGainSlider) {
     txStatusGainVal.textContent = parseFloat(txGainSlider.value).toFixed(1) + ' dB';
@@ -280,6 +301,13 @@ function handleConfigUpdate(payload) {
     minHardwareSpanHz = payload.min_span_hz;
   }
 
+  // Mirror the backend: a shrunken hardware rate re-clamps the TX offset.
+  const clampedTxOffset = clampTxOffset(txOffsetHz);
+  if (clampedTxOffset !== txOffsetHz) {
+    txOffsetHz = clampedTxOffset;
+    if (txOffsetInput) txOffsetInput.value = txOffsetHz;
+  }
+
   if (currentBandwidthHz > sdrBandwidthHz) {
     currentBandwidthHz = sdrBandwidthHz;
   }
@@ -354,6 +382,13 @@ function handleSettingsUpdate(payload) {
       rxGainVal.textContent = gainDb.toFixed(1) + ' dB';
     }
     rxGainSlider.disabled = !window.isConnected || gainMode !== 'manual';
+  }
+
+  if (payload.tx_offset_hz !== undefined) {
+    txOffsetHz = payload.tx_offset_hz;
+    if (txOffsetInput) {
+      txOffsetInput.value = txOffsetHz;
+    }
   }
 
   const rfBw = payload.rf_bandwidth_hz;
@@ -501,6 +536,20 @@ function desiredHardwareLo(centerHz, visualBw, hwSpan, listeningHz) {
 // Triggers center frequency tuning request if hardware LO needs to be adjusted
 function updateHardwareLo() {
   if (!window.isConnected) return;
+
+  // When zoomed in, panning is often purely visual: if the visible window still fits inside
+  // the current hardware capture window, keep the LO where it is so the AD9361 doesn't need
+  // to retune and the movement stays instantaneous.
+  const margin = sdrBandwidthHz * 0.02;
+  const viewStartHz = currentCenterHz - currentBandwidthHz / 2;
+  const viewEndHz = currentCenterHz + currentBandwidthHz / 2;
+  const hwStartHz = sdrHardwareLoHz - sdrBandwidthHz / 2;
+  const hwEndHz = sdrHardwareLoHz + sdrBandwidthHz / 2;
+  if (viewStartHz >= hwStartHz + margin && viewEndHz <= hwEndHz - margin) {
+    hardwareLoHz = sdrHardwareLoHz;
+    return;
+  }
+
   const listeningHz = parseInt(frequencyInput.value, 10);
   const targetLo = desiredHardwareLo(currentCenterHz, currentBandwidthHz, sdrBandwidthHz, listeningHz);
   hardwareLoHz = targetLo;
@@ -624,7 +673,7 @@ function drawAxis(width, height) {
 
   // Draw TX LO Indicator (Magenta/Pink bar on axis)
   if (!Number.isNaN(listeningHz)) {
-    const txLoHz = listeningHz - 50000;
+    const txLoHz = listeningHz - txOffsetHz;
     const txLoX = Math.round(((txLoHz - startHz) / currentBandwidthHz) * width);
     if (txLoX >= 0 && txLoX <= width) {
       ctx.fillStyle = '#ff5599'; // Bright Magenta/Pink
@@ -832,11 +881,20 @@ canvas.addEventListener('mousedown', (e) => {
     return;
   }
 
+  // Check if dragging the pink TX LO bar on the axis (adjusts the TX DDS offset)
+  if (!Number.isNaN(listeningHz)) {
+    const txLoX = ((listeningHz - txOffsetHz - startHz) / currentBandwidthHz) * rect.width;
+    if (isInAxis && Math.abs(x - txLoX) <= 6) {
+      isDraggingBar = 'txlo';
+      dragBarMoved = false;
+      return;
+    }
+  }
+
   isDragging = true;
   dragMoved = false;
   dragStartX = e.clientX;
   dragStartCenterHz = currentCenterHz;
-  dragStartHardwareLoHz = hardwareLoHz;
 });
 
 canvas.addEventListener('mousemove', (e) => {
@@ -849,23 +907,34 @@ canvas.addEventListener('mousemove', (e) => {
   const startHz = currentCenterHz - (currentBandwidthHz * 0.5);
   const sdrCenterX = ((hardwareLoHz - startHz) / currentBandwidthHz) * rect.width;
 
+  const listeningHz = parseInt(frequencyInput.value, 10);
+  const txLoHz = listeningHz - txOffsetHz;
+  const txLoX = ((txLoHz - startHz) / currentBandwidthHz) * rect.width;
+
   const isNearSdrCenter = Math.abs(x - sdrCenterX) < 10;
+  const isNearTxLo = !Number.isNaN(listeningHz) && Math.abs(x - txLoX) < 10;
   const isInAxis = y >= (rect.height - axisHeight);
+  const isBigTooltip = (isNearSdrCenter || isNearTxLo) && isInAxis;
 
   // Set up DC spike warning / LO indicator tooltip
   if (isNearSdrCenter && isInAxis) {
-    hoverTooltip.innerHTML = 
+    hoverTooltip.innerHTML =
       `<span style="color: #ff9800; font-weight: bold;">⚠️ SDR Center (Potential DC Spike)</span><br/>` +
       `<span style="color: #fff;">Freq: ${formatFrequency(hardwareLoHz, binHz)}</span><br/>` +
       `<span style="color: #aaa; font-size: 11px; font-family: sans-serif; line-height: 1.2;">Drag to retune hardware LO. LO leakage can cause a DC offset spike here.</span>`;
+  } else if (isNearTxLo && isInAxis) {
+    hoverTooltip.innerHTML =
+      `<span style="color: #ff5599; font-weight: bold;">⚠️ TX LO (DDS Offset: ${formatHzShort(txOffsetHz)})</span><br/>` +
+      `<span style="color: #fff;">Freq: ${formatFrequency(txLoHz, binHz)}</span><br/>` +
+      `<span style="color: #aaa; font-size: 11px; font-family: sans-serif; line-height: 1.2;">The TX LO sits this offset below the listening frequency; the FPGA DDS shifts the signal back up. TX LO leakage can cause a carrier spike here — drag to change the offset.</span>`;
   } else {
     hoverTooltip.textContent = formatFrequency(freqHz, binHz);
   }
-  
+
   let leftOffset = x + 15;
   let topOffset = y + 15;
-  const tooltipApproxHeight = isNearSdrCenter && isInAxis ? 75 : 30;
-  const tooltipApproxWidth = isNearSdrCenter && isInAxis ? 250 : 120;
+  const tooltipApproxHeight = isBigTooltip ? 75 : 30;
+  const tooltipApproxWidth = isBigTooltip ? 250 : 120;
 
   if (y + tooltipApproxHeight + 25 > rect.height) {
     topOffset = y - tooltipApproxHeight - 15;
@@ -877,8 +946,6 @@ canvas.addEventListener('mousemove', (e) => {
   hoverTooltip.style.left = leftOffset + 'px';
   hoverTooltip.style.top = topOffset + 'px';
   hoverTooltip.style.display = 'block';
-
-  const listeningHz = parseInt(frequencyInput.value, 10);
 
   if (isDraggingBar) {
     dragBarMoved = true;
@@ -893,6 +960,11 @@ canvas.addEventListener('mousemove', (e) => {
       }, 50);
     } else if (isDraggingBar === 'lo') {
       hardwareLoHz = Math.round(freqHz);
+    } else if (isDraggingBar === 'txlo') {
+      if (!Number.isNaN(listeningHz)) {
+        txOffsetHz = clampTxOffset(Math.round(listeningHz - freqHz));
+        if (txOffsetInput) txOffsetInput.value = txOffsetHz;
+      }
     } else if (isDraggingBar === 'left') {
       const maxBw = (currentMode === 'USB' || currentMode === 'LSB') ? 20000 : 110000;
       if (currentMode === 'FM') currentFilterBw = Math.max(1000, Math.min(maxBw, (listeningHz - freqHz) * 2));
@@ -923,9 +995,10 @@ canvas.addEventListener('mousemove', (e) => {
       dragMoved = true;
       canvas.style.cursor = 'grabbing';
     }
+    // The hardware LO (and its orange marker) stays put while panning; updateHardwareLo
+    // decides on mouseup whether a retune is actually needed.
     const deltaHz = (deltaX / rect.width) * currentBandwidthHz;
     currentCenterHz = dragStartCenterHz - deltaHz;
-    hardwareLoHz = dragStartHardwareLoHz - deltaHz;
     centerFreqInput.value = Math.round(currentCenterHz);
 
     if (dragMoved) {
@@ -949,6 +1022,7 @@ canvas.addEventListener('mousemove', (e) => {
         const isInAxis_hover = y >= (rect.height - axisHeight);
         if (isInAxis_hover && Math.abs(x - sdrCenterX_hover) <= 6) hoverEdge = true;
       }
+      if (isInAxis && Math.abs(x - txLoX) <= 6) hoverEdge = true;
     }
 
     canvas.style.cursor = hoverEdge ? 'ew-resize' : 'crosshair';
@@ -1007,6 +1081,7 @@ window.addEventListener('mouseup', () => {
   if (isDraggingBar) {
     const wasCarrierDrag = isDraggingBar === 'carrier' && dragBarMoved;
     const wasLoDrag = isDraggingBar === 'lo' && dragBarMoved;
+    const wasTxLoDrag = isDraggingBar === 'txlo' && dragBarMoved;
     isDraggingBar = false;
     canvas.style.cursor = 'crosshair';
     if (wasCarrierDrag) {
@@ -1018,6 +1093,9 @@ window.addEventListener('mouseup', () => {
     } else if (wasLoDrag) {
       centerFreqInput.value = Math.round(hardwareLoHz);
       sendCommand({ type: 'SetRxCenterFrequency', payload: { hz: Math.round(hardwareLoHz) } });
+      redrawWaterfallFromHistory();
+    } else if (wasTxLoDrag) {
+      sendCommand({ type: 'SetTxOffset', payload: { hz: txOffsetHz } });
       redrawWaterfallFromHistory();
     }
     return;
@@ -1070,10 +1148,8 @@ window.addEventListener('keydown', (e) => {
     const panStepHz = Math.round(currentBandwidthHz * 0.1);
     if (e.key === 'ArrowLeft') {
       currentCenterHz -= panStepHz;
-      hardwareLoHz -= panStepHz;
     } else {
       currentCenterHz += panStepHz;
-      hardwareLoHz += panStepHz;
     }
 
     redrawWaterfallFromHistory();
@@ -1197,6 +1273,21 @@ if (txGainSlider) {
     const val = parseFloat(e.target.value);
     sendCommand({ type: 'SetTxGain', payload: { db: val } });
     updateStatusBar();
+  });
+}
+
+if (txOffsetInput) {
+  txOffsetInput.addEventListener('change', () => {
+    let hz = parseInt(txOffsetInput.value, 10);
+    if (Number.isNaN(hz)) {
+      txOffsetInput.value = txOffsetHz;
+      return;
+    }
+    hz = clampTxOffset(hz);
+    txOffsetInput.value = hz;
+    txOffsetHz = hz;
+    sendCommand({ type: 'SetTxOffset', payload: { hz } });
+    redrawWaterfallFromHistory();
   });
 }
 

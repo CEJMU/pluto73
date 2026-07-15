@@ -225,8 +225,15 @@
           </div>
         </div>
 
-        <!-- Second Row: Sync and TX Status (right aligned) -->
+        <!-- Second Row: TX LO Offset (left), Sync and TX Status (right aligned) -->
         <div class="tx-row-footer">
+          <div
+            class="control-group push-left"
+            title="Frequency offset (Hz) between the TX LO and the transmitted signal, applied by the FPGA DDS. Keeps the TX LO leakage (carrier spike, pink bar in the waterfall) away from your signal. Can also be changed by dragging the pink bar."
+          >
+            <label for="tx-offset">TX LO Offset (Hz):</label>
+            <input type="number" id="tx-offset" value="50000" step="1000" />
+          </div>
           <div class="sync-wrap">
             <input
               type="checkbox"
@@ -261,8 +268,8 @@
             <span id="tx-status-lo-val" class="tx-val">99.288 MHz</span></span
           >
           <span
-            ><strong>TX DUC Offset:</strong>
-            <span class="tx-val">+50 kHz (FPGA DDS)</span></span
+            ><strong>TX LO Offset:</strong>
+            <span id="tx-status-offset-val" class="tx-val">+50 kHz</span></span
           >
           <span
             ><strong>TX Gain:</strong>

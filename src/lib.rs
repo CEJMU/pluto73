@@ -47,6 +47,11 @@ fn get_min_span(mode: DemodMode) -> i64 {
     }
 }
 
+/// Largest TX DDS offset the analog TX chain passes cleanly at sample rate `fs_hz` + safety margin
+fn max_tx_offset(fs_hz: i64) -> i64 {
+    fs_hz / 2 - 20_000
+}
+
 /// Reads `<flag> <N>` from the CLI args, falling back to `default` if the flag is absent or its
 /// value is missing/invalid.
 fn parse_port_arg(args: &[String], flag: &str, default: u16) -> u16 {
@@ -485,6 +490,14 @@ fn run_device_loop(
                     cfg.mode = new_mode;
                     cfg.filter_bw = filter_bw_hz;
                 }
+                ControlCommand::SetTxOffset { hz } => {
+                    let limit = max_tx_offset(current_fs_hz);
+                    state.tx_offset_hz = hz.clamp(-limit, limit);
+                    let _ = rx_io_cmd_tx.send(IoCommand::SetTxOffset {
+                        offset_hz: state.tx_offset_hz,
+                        playback_hz: state.playback_hz,
+                    });
+                }
                 ControlCommand::SetRxGainMode { mode } => {
                     state.rx_gain_mode = mode.parse().unwrap_or(GainMode::AgcSlow);
                     let _ = rx_io_cmd_tx.send(IoCommand::SetRxGainMode(mode));
@@ -534,6 +547,7 @@ fn run_device_loop(
                         rx_gain_mode: state.rx_gain_mode.to_string(),
                         rx_gain_db: state.rx_gain_db,
                         rf_bandwidth_hz: state.rf_bandwidth_hz,
+                        tx_offset_hz: state.tx_offset_hz,
                         waterfall_min_db: fft.min_db,
                         waterfall_max_db: fft.max_db,
                         waterfall_fft_size: fft.fft_size(),
@@ -567,6 +581,16 @@ fn run_device_loop(
                 pending_dsp_reset -= 1;
             }
 
+            // Clamp tx lo offset and push the update to the IO threads.
+            let offset_limit = max_tx_offset(current_fs_hz);
+            if state.tx_offset_hz.abs() > offset_limit {
+                state.tx_offset_hz = state.tx_offset_hz.clamp(-offset_limit, offset_limit);
+                let _ = rx_io_cmd_tx.send(IoCommand::SetTxOffset {
+                    offset_hz: state.tx_offset_hz,
+                    playback_hz: state.playback_hz,
+                });
+            }
+
             let min_span = get_min_span(state.demod_mode);
             let _ = status_messages_tx.send(network::ServerMessage::Config {
                 lo_hz: actual_lo,
@@ -586,7 +610,7 @@ fn run_device_loop(
                 let rounded_tx_fs = (current_fs_hz as f64 / 192000.0).round() * 192000.0;
                 tx_fs_atomic.store(rounded_tx_fs as u32, Ordering::Relaxed);
                 let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
-                    lo_hz: state.playback_hz - 50_000,
+                    lo_hz: state.playback_hz - state.tx_offset_hz,
                     fs_hz: current_fs_hz,
                 });
                 sys.reset_audio_dma_controller();

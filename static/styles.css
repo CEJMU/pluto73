@@ -159,6 +159,10 @@ canvas {
   margin-left: auto;
 }
 
+.push-left {
+  margin-right: auto;
+}
+
 .ml-5 {
   margin-left: 5px;
 }
