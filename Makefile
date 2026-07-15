@@ -20,6 +20,8 @@ export PATH        := $(CROSS_COMPILE_PATH):$(PATH)
 export TOOLCHAIN_DIR
 export VIVADO_SETTINGS
 
+FW_MAKE            := $(MAKE) -C $(FW_DIR) BR2_TOOLCHAIN_EXTERNAL_PREINSTALLED=y BR2_TOOLCHAIN_EXTERNAL_PATH=$(TOOLCHAIN_DIR)
+
 # --- Target device -----------------------------------------------------------
 TARGET_IP    := 192.168.2.1
 TARGET_USER  := root
@@ -95,12 +97,12 @@ bitstream:                ## Synth+impl the FPGA project and export system_top.x
 	# Drives the fw Makefile's own xsa rule, which runs the Vivado project build
 	# (system_project.tcl -> our wrapper system_bd.tcl -> hdl_bd/ + hdl_modules),
 	# generates the bitstream, and write_hw_platform's system_top.xsa into build/.
-	source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) build/system_top.xsa
+	source $(VIVADO_SETTINGS) && $(FW_MAKE) build/system_top.xsa
 
 firmware:                 ## Build all flashable images end-to-end (frm + dfu + boot; auto-builds bitstream+xsa first)
 	# Chains synth -> impl -> bitstream -> xsa -> fsbl/u-boot/kernel/dtb/rootfs -> itb -> the
 	# flashing artifacts, with no manual steps.
-	source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) $(FLASH_TARGETS)
+	source $(VIVADO_SETTINGS) && $(FW_MAKE) $(FLASH_TARGETS)
 	@echo "Flashing artifacts ready in $(FW_DIR)/build/ ($(FLASH_TARGETS))"
 
 .PHONY: bake certs
@@ -110,7 +112,7 @@ bake: firmware certs      ## Cross-build the app and bake it (+ frontend + TLS c
 	# board/pluto/post-build.sh, which installs the freshly built binary, static/, and
 	# cert.pem/key.pem into /opt/pluto and adds the S99pluto autostart script.
 	$(MAKE) app
-	source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) $(FLASH_TARGETS)
+	source $(VIVADO_SETTINGS) && $(FW_MAKE) $(FLASH_TARGETS)
 	@echo "Flashing artifacts (app baked in) ready in $(FW_DIR)/build/ ($(FLASH_TARGETS))"
 
 certs:                    ## Generate a self-signed TLS cert/key (skipped if cert.pem/key.pem already exist)
@@ -127,7 +129,7 @@ certs:                    ## Generate a self-signed TLS cert/key (skipped if cer
 # =============================================================================
 .PHONY: clean distclean
 clean:                    ## Remove build artifacts (firmware build/, Vivado project, cargo target); keeps patches
-	-source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) clean
+	-source $(VIVADO_SETTINGS) && $(FW_MAKE) clean
 	-cargo clean
 
 distclean: clean          ## clean + revert ALL patches, resetting the submodule trees to pristine ADI

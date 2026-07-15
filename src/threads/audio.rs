@@ -187,6 +187,7 @@ pub fn spawn_audio_thread(
             }];
             // SAFETY: fds points to a valid stack-allocated array of size 1.
             let poll_ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 50) };
+
             if poll_ret < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.kind() == std::io::ErrorKind::Interrupted {
@@ -204,16 +205,39 @@ pub fn spawn_audio_thread(
                 continue;
             }
 
-            // Clear the interrupt and copy samples.
+            // Clear the interrupt and get DMA read pointer.
             let total_read;
+            let ram_ptr;
             {
                 let mut sys = system.lock().unwrap();
                 if !sys.is_configuring {
-                    total_read = sys
-                        .read_audio_dma_samples(&mut i_ch, &mut q_ch)
-                        .unwrap_or(0);
+                    if let Some((count, ptr)) = sys.prepare_audio_dma_read() {
+                        total_read = count;
+                        ram_ptr = ptr;
+                    } else {
+                        total_read = 0;
+                        ram_ptr = std::ptr::null();
+                    }
                 } else {
                     total_read = 0;
+                    ram_ptr = std::ptr::null();
+                }
+            }
+
+            if total_read > 0 && !ram_ptr.is_null() {
+                // Copy the entire block in bulk into a local vector first.
+                // This uses optimized memcpy (AXI burst reads) which is much faster.
+                let mut local_buf = vec![0u32; total_read];
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ram_ptr, local_buf.as_mut_ptr(), total_read);
+                }
+
+                // Unpack from local cached memory.
+                i_ch.reserve(total_read);
+                q_ch.reserve(total_read);
+                for &packed in local_buf.iter() {
+                    i_ch.push((packed & 0xFFFF) as i16);
+                    q_ch.push(((packed >> 16) & 0xFFFF) as i16);
                 }
             }
 

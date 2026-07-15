@@ -2,8 +2,9 @@
 
 use log::{debug, warn};
 use memmap2::MmapOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsRawFd;
 use std::ptr::{read_volatile, write_volatile};
 use std::{fs::OpenOptions, thread, time::Duration};
 
@@ -961,6 +962,24 @@ impl PlutoSystem {
         self.write_gpio_tx(0x00, 0x0);
     }
 
+    /// Drains any stale pending interrupts from the Linux kernel UIO driver.
+    pub fn drain_uio_interrupts(&mut self) {
+        let raw_fd = self.uio_file.as_raw_fd();
+        let mut fds = [libc::pollfd {
+            fd: raw_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        unsafe {
+            // Non-blocking poll (timeout = 0)
+            while libc::poll(fds.as_mut_ptr(), 1, 0) > 0 {
+                let mut int_info = [0u8; 4];
+                let _ = self.uio_file.read(&mut int_info);
+                fds[0].revents = 0;
+            }
+        }
+    }
+
     /// Restarts the AXI DMA engine and resets the interrupt mask/status registers to clear any pending triggers.
     pub fn reset_audio_dma_controller(&mut self) {
         // Stop DMA
@@ -976,6 +995,9 @@ impl PlutoSystem {
         // Unmask EOT (Bit 1 = 0), Mask SOT (Bit 0 = 1)
         // This ensures UIO only wakes us up when the transfer is DONE!
         self.write_dma(DMA_REG_IRQ_MASK, 0x01);
+
+        // Drain any stale UIO interrupts from the kernel driver
+        self.drain_uio_interrupts();
     }
 
     /// Queues initial ping-pong DMA transfer descriptors if the DMA engine is currently stopped.
@@ -1031,6 +1053,33 @@ impl PlutoSystem {
 
         self.ping_pong = !self.ping_pong;
         Some(MAX_AUDIO_SAMPLES)
+    }
+
+    /// Prepares the DMA for the next read and returns the raw pointer to the mmapped RAM buffer
+    /// corresponding to the completed transfer, allowing copy/unpack to run outside the lock.
+    pub fn prepare_audio_dma_read(&mut self) -> Option<(usize, *const u32)> {
+        if self.is_configuring || !self.dma_running {
+            return None;
+        }
+
+        let max_bytes: u32 = (MAX_AUDIO_SAMPLES * 4) as u32;
+        let current_offset = if self.ping_pong { max_bytes } else { 0 };
+
+        // Clear DMA Interrupt unconditionally
+        self.write_dma(DMA_REG_IRQ_PENDING, 0xFFFFFFFF);
+
+        // Queue the next transfer into current_offset (the buffer we just finished) BEFORE reading
+        // it, to keep the 2-deep hardware queue full and never underrun
+        self.submit_dma_transfer(current_offset, max_bytes);
+
+        let _ = self.uio_file.write_all(&1u32.to_ne_bytes());
+
+        let ram_ptr = unsafe {
+            (self.ram_buf.as_ptr() as *const u8).add(current_offset as usize) as *const u32
+        };
+
+        self.ping_pong = !self.ping_pong;
+        Some((MAX_AUDIO_SAMPLES, ram_ptr))
     }
 
 

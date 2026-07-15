@@ -294,7 +294,10 @@ async fn handle_ws_connection(
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("[WS] Waterfall channel lagged! Skipped {} messages", skipped);
+                        continue;
+                    }
                     Err(_) => break,
                 }
             }
@@ -311,7 +314,10 @@ async fn handle_ws_connection(
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("[WS] Audio channel lagged! Skipped {} messages", skipped);
+                        continue;
+                    }
                     Err(_) => break,
                 }
             }
@@ -327,7 +333,10 @@ async fn handle_ws_connection(
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("[WS] IQ stream channel lagged! Skipped {} messages", skipped);
+                        continue;
+                    }
                     Err(_) => break,
                 }
             }
@@ -341,7 +350,10 @@ async fn handle_ws_connection(
                             }
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("[WS] Status messages channel lagged! Skipped {} messages", skipped);
+                        continue;
+                    }
                     Err(_) => break,
                 }
             }

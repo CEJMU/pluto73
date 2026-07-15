@@ -611,7 +611,15 @@ fn run_device_loop(
 
         // Waterfall: once per interval, trigger a burst and emit one FFT row.
         let elapsed_since_last = last_waterfall_time.elapsed();
-        if elapsed_since_last >= Duration::from_millis(state.waterfall_interval_ms) {
+        
+        // Calculate the absolute minimum interval required by the physical hardware capture rate
+        let capture_time_ms = (16384.0 * 1000.0 / current_fs_hz.max(1) as f64) as u64;
+        let min_hardware_interval_ms = capture_time_ms + 5;
+
+        // Capping target interval to be at least min_hardware_interval_ms to prevent trigger collisions
+        let target_interval_ms = (state.waterfall_interval_ms as u64).max(min_hardware_interval_ms);
+
+        if elapsed_since_last >= Duration::from_millis(target_interval_ms) {
             // Recycle the backlog first: the waterfall only needs the freshest snapshot, and the
             // 128-deep channel would otherwise make the displayed row seconds old.
             while let Ok(_) = rx_iq_rx.try_recv() {}
@@ -638,13 +646,11 @@ fn run_device_loop(
                 let row = fft.process_frame(&wf_iq);
                 let fft_duration = fft_start.elapsed();
 
-                if state.waterfall_interval_ms > 0
-                    && fft_duration >= Duration::from_millis(state.waterfall_interval_ms)
-                {
+                if fft_duration >= Duration::from_millis(target_interval_ms) {
                     warn!(
                         "Waterfall FFT calculation is too slow! Took {}ms (Target interval: {}ms)",
                         fft_duration.as_millis(),
-                        state.waterfall_interval_ms
+                        target_interval_ms
                     );
                 }
 
