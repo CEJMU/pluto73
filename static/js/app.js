@@ -75,8 +75,33 @@ let sdrHardwareLoHz = hardwareLoHz;      // Current streaming hardware LO freque
 let sdrBandwidthHz = currentBandwidthHz;  // Current streaming sample rate/bandwidth
 let minHardwareSpanHz = 3840000;         // Minimum supported hardware span for streaming audio
 let isConfigInitialized = false;
-const axisHeight = 30;                   // Height of the frequency scale axis
+const axisHeight = 30;                   // Height of the frequency scale axis (CSS pixels)
+// Scales the canvas backing buffer to the display's true resolution (capped at 2x) to avoid blur.
+let dpr = Math.min(window.devicePixelRatio || 1, 2);
+function axisHeightPx() { return Math.round(axisHeight * dpr); }  // axisHeight in backing-buffer pixels, for the waterfall region math.
+function rowStepPx() { return Math.max(1, Math.round(dpr)); }     // Backing-buffer pixels per waterfall row
+
 let isWaitingForHardware = false;        // Blocks rendering during tuning to avoid buffer corruption
+let awaitingFirstRow = false;            // After Config: still dropping settling frames until real signal
+let settleFallbackTimer = null;          // Safety valve: force-resume if no valid row ever arrives
+
+// A settling burst reads as an all-near-zero row (solid blue band); real spectrum sits above 0.
+function isEmptyRow(row) {
+  for (let i = 0; i < row.length; i++) {
+    if (row[i] > 2) return false;
+  }
+  return true;
+}
+
+// Force rendering to resume after `ms`, so a failed/silent reconfig can't freeze the waterfall.
+function armSettleFallback(ms) {
+  if (settleFallbackTimer) clearTimeout(settleFallbackTimer);
+  settleFallbackTimer = setTimeout(() => {
+    isWaitingForHardware = false;
+    awaitingFirstRow = false;
+    settleFallbackTimer = null;
+  }, ms);
+}
 
 // Demodulator Settings
 let currentMode = 'FM';
@@ -110,6 +135,15 @@ let filterBwTimeout = null;
 // Zoom & Keyboard Panning
 let keyboardPanTimeout = null;
 let zoomTimeout = null;
+// Serialize span reconfigs (one in flight): rapid zooming would otherwise queue many slow AD9361
+// retunes. Later zooms just flag a resend; the latest view is sent when the current one is acked.
+let spanReconfigInFlight = false;
+let spanReconfigQueued = false;
+let spanReconfigTimer = null;
+// Track the span/LO we last requested so Config acks from unrelated commands
+// (demod changes, antenna, etc.) don't falsely release the in-flight lock.
+let spanReconfigExpectedSpanHz = null;
+let spanReconfigExpectedLoHz = null;
 const ZOOM_STEPS = [
   12500, 25000, 50000, 100000, 250000, 500000, 720000, 960000,
   1200000, 1440000, 1680000, 1920000, 2160000, 2400000, 3000000,
@@ -327,10 +361,33 @@ function handleConfigUpdate(payload) {
 
   redrawWaterfallFromHistory();
 
-  // Give local buffers some time to settle after hardware tuning
-  setTimeout(() => {
-    isWaitingForHardware = false;
-  }, 300);
+  // Span reconfig acknowledged: release the lock and, if the user kept zooming, send one more
+  // SetRxSpan for the latest view (coalescing into a single final retune).
+  // Only release if this Config actually matches the span we requested. Otherwise it's an
+  // unrelated Config (demod change, antenna, etc.) and the span retune is still pending.
+  if (spanReconfigInFlight &&
+      spanReconfigExpectedSpanHz !== null &&
+      sdrBandwidthHz === spanReconfigExpectedSpanHz &&
+      Math.abs(sdrHardwareLoHz - spanReconfigExpectedLoHz) < 100) {
+    spanReconfigInFlight = false;
+    spanReconfigExpectedSpanHz = null;
+    spanReconfigExpectedLoHz = null;
+    if (spanReconfigTimer) {
+      clearTimeout(spanReconfigTimer);
+      spanReconfigTimer = null;
+    }
+    if (spanReconfigQueued) {
+      spanReconfigQueued = false;
+      sendSpanUpdate();
+    }
+  }
+
+  // Retune done, but the first bursts are still settling. Stay gated; appendWaterfallRow
+  // resumes on the first row with real signal.
+  if (isWaitingForHardware) {
+    awaitingFirstRow = true;
+    armSettleFallback(3000);
+  }
 
   updatePlaybackAbility();
 }
@@ -413,7 +470,7 @@ function handleSettingsUpdate(payload) {
     if (wfMaxDbVal) wfMaxDbVal.textContent = maxDb.toFixed(0) + ' dB';
   }
 
-  drawAxis(canvas.width, canvas.height);
+  drawAxis(canvas.width / dpr, canvas.height / dpr);
   redrawWaterfallFromHistory();
   updatePlaybackAbility();
 }
@@ -555,6 +612,8 @@ function updateHardwareLo() {
   hardwareLoHz = targetLo;
   if (Math.round(targetLo) !== Math.round(sdrHardwareLoHz)) {
     isWaitingForHardware = true;
+    awaitingFirstRow = false;
+    armSettleFallback(3000);
     sendCommand({ type: 'SetRxCenterFrequency', payload: { hz: targetLo } });
   }
 }
@@ -578,22 +637,51 @@ function getNextZoomStep(currentBw, zoomOut) {
 
 // Debounces physical SDR span updates to the backend
 function scheduleRxSpanUpdate() {
+  // Freeze rendering right away: rows still arriving were captured at the old span/LO and would
+  // render misaligned against the new view. Resumes on the first valid row after Config.
+  isWaitingForHardware = true;
+  awaitingFirstRow = false;
+  armSettleFallback(3000);
   if (zoomTimeout) clearTimeout(zoomTimeout);
   zoomTimeout = setTimeout(() => {
-    isWaitingForHardware = true;
-    const requestedHardwareSpan = Math.max(minHardwareSpanHz, currentBandwidthHz);
-    sendCommand({
-      type: 'SetRxSpan',
-      payload: { center_hz: Math.round(hardwareLoHz), span_hz: requestedHardwareSpan }
-    });
     zoomTimeout = null;
+    sendSpanUpdate();
   }, 250);
+}
+
+// Sends one SetRxSpan, honouring the single-in-flight rule: if a reconfig is already pending the
+// request is deferred and re-issued on the next Config. The timer guards against a dropped Config.
+function sendSpanUpdate() {
+  if (spanReconfigInFlight) {
+    spanReconfigQueued = true;
+    return;
+  }
+  spanReconfigInFlight = true;
+  spanReconfigQueued = false;
+  if (spanReconfigTimer) clearTimeout(spanReconfigTimer);
+  spanReconfigTimer = setTimeout(() => {
+    spanReconfigInFlight = false;
+    spanReconfigExpectedSpanHz = null;
+    spanReconfigExpectedLoHz = null;
+    spanReconfigTimer = null;
+    if (spanReconfigQueued) sendSpanUpdate();
+  }, 3000);
+  const requestedHardwareSpan = Math.max(minHardwareSpanHz, currentBandwidthHz);
+  spanReconfigExpectedSpanHz = requestedHardwareSpan;
+  spanReconfigExpectedLoHz = Math.round(hardwareLoHz);
+  sendCommand({
+    type: 'SetRxSpan',
+    payload: { center_hz: Math.round(hardwareLoHz), span_hz: requestedHardwareSpan }
+  });
 }
 
 // --- Waterfall Drawing & Rendering ---
 
-// Draws the frequency ticks, passband width indicator, and DC/TX LO markers on the bottom axis
+// Draws the frequency ticks, passband box, and DC/TX LO markers on the bottom axis. width/height
+// are CSS pixels; setTransform scales to the backing buffer so text/ticks stay crisp on HiDPI.
 function drawAxis(width, height) {
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const axisY = height - axisHeight;
   ctx.fillStyle = '#111'; // Dark background
   ctx.fillRect(0, axisY, width, axisHeight);
@@ -680,6 +768,8 @@ function drawAxis(width, height) {
       ctx.fillRect(txLoX - 1, axisY, 2, axisHeight);
     }
   }
+
+  ctx.restore();
 }
 
 // Paints a single waterfall row into an RGBA pixel buffer
@@ -758,7 +848,7 @@ function paintWaterfallRow(pixels, rowOffset, row, histStartHz, histBandwidthHz,
 // Redraws the waterfall display from history buffer
 function redrawWaterfallFromHistory() {
   const width = canvas.width;
-  const wfHeight = canvas.height - axisHeight;
+  const wfHeight = canvas.height - axisHeightPx();
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, width, wfHeight);
 
@@ -778,34 +868,53 @@ function redrawWaterfallFromHistory() {
   const imgData = ctx.createImageData(width, wfHeight);
   const data = imgData.data;
 
+  const rowStep = rowStepPx();
+  const lineBytes = width * 4;
   for (let y = 0; y < rowHistory.length; y++) {
     const hist = rowHistory[y];
     const histStartHz = hist.hardwareLoHz - (hist.bandwidthHz * 0.5);
-    const rowOffset = (wfHeight - 1 - y) * width * 4;
-    paintWaterfallRow(data, rowOffset, hist.row, histStartHz, hist.bandwidthHz,
+    const topLine = wfHeight - (y + 1) * rowStep;
+    if (topLine < 0) break;
+    const base = topLine * lineBytes;
+    paintWaterfallRow(data, base, hist.row, histStartHz, hist.bandwidthHz,
       currentStartHz, currentBandwidthHz, width, listenX, boxStartX, boxEndX);
+    // Replicate the painted line to fill the row's full height (cheap byte copy, no re-interp).
+    for (let i = 1; i < rowStep; i++) {
+      data.copyWithin(base + i * lineBytes, base, base + lineBytes);
+    }
   }
   ctx.putImageData(imgData, 0, 0);
-  drawAxis(canvas.width, canvas.height);
+  drawAxis(canvas.width / dpr, canvas.height / dpr);
   updateStatusBar();
 }
 
 // Appends a new incoming DSP row to the history and shifts display pixels upward
 function appendWaterfallRow(row) {
-  if (isWaitingForHardware) return;
+  if (isWaitingForHardware) {
+    // Reconfiguring: drop rows until Config lands, then drop settling frames and resume on the
+    // first row with real signal.
+    if (!awaitingFirstRow || isEmptyRow(row)) return;
+    isWaitingForHardware = false;
+    awaitingFirstRow = false;
+    if (settleFallbackTimer) {
+      clearTimeout(settleFallbackTimer);
+      settleFallbackTimer = null;
+    }
+  }
 
   const width = canvas.width;
   const height = canvas.height;
-  const wfHeight = height - axisHeight;
+  const wfHeight = height - axisHeightPx();
+  const rowStep = rowStepPx();
 
   rowHistory.unshift({
     row: new Uint8Array(row),
     hardwareLoHz: sdrHardwareLoHz,
     bandwidthHz: sdrBandwidthHz
   });
-  if (rowHistory.length > wfHeight) rowHistory.pop();
+  if (rowHistory.length > Math.floor(wfHeight / rowStep)) rowHistory.pop();
 
-  ctx.drawImage(canvas, 0, 1, width, wfHeight - 1, 0, 0, width, wfHeight - 1);
+  ctx.drawImage(canvas, 0, rowStep, width, wfHeight - rowStep, 0, 0, width, wfHeight - rowStep);
 
   if (!cachedRowData || cachedRowData.width !== width) {
     cachedRowData = ctx.createImageData(width, 1);
@@ -832,8 +941,10 @@ function appendWaterfallRow(row) {
   paintWaterfallRow(pixels, 0, row, sdrStartHz, sdrBandwidthHz,
     startHz, currentBandwidthHz, width, listenX, boxStartX, boxEndX);
 
-  ctx.putImageData(rowData, 0, wfHeight - 1);
-  drawAxis(width, height);
+  for (let i = 0; i < rowStep; i++) {
+    ctx.putImageData(rowData, 0, wfHeight - rowStep + i);
+  }
+  drawAxis(width / dpr, height / dpr);
 }
 
 // --- Interactive Canvas Mouse & Gesture Listeners ---
@@ -1197,7 +1308,7 @@ setFilterBwButton.addEventListener('click', () => {
       type: 'SetRxDemodulation',
       payload: { mode: currentMode, filter_bw_hz: currentFilterBw }
     });
-    drawAxis(canvas.width, canvas.height);
+    drawAxis(canvas.width / dpr, canvas.height / dpr);
     redrawWaterfallFromHistory();
     syncTxToRx();
   }
@@ -1212,7 +1323,7 @@ modeSelect.addEventListener('change', (e) => {
     type: 'SetRxDemodulation',
     payload: { mode: currentMode, filter_bw_hz: currentFilterBw }
   });
-  drawAxis(canvas.width, canvas.height);
+  drawAxis(canvas.width / dpr, canvas.height / dpr);
   redrawWaterfallFromHistory();
   syncTxToRx();
 });
@@ -1236,7 +1347,8 @@ antennaSelect.addEventListener('change', (e) => {
   if (!Number.isNaN(antenna)) {
     sendCommand({ type: 'SetRxAntenna', payload: { antenna } });
     isWaitingForHardware = true;
-    setTimeout(() => { isWaitingForHardware = false; }, 300);
+    awaitingFirstRow = false;
+    armSettleFallback(3000);
   }
 });
 
@@ -1356,6 +1468,8 @@ setCenterFreqButton.addEventListener('click', () => {
     hardwareLoHz = hz;
     redrawWaterfallFromHistory();
     isWaitingForHardware = true;
+    awaitingFirstRow = false;
+    armSettleFallback(3000);
     sendCommand({ type: 'SetRxCenterFrequency', payload: { hz } });
   }
 });
@@ -1367,8 +1481,9 @@ updateRunStatusBadge();
 
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
-  const targetWidth = Math.round(rect.width) || 1024;
-  const targetHeight = Math.round(rect.height) || 400;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const targetWidth = Math.round(rect.width * dpr) || 1024;
+  const targetHeight = Math.round(rect.height * dpr) || 400;
 
   if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
     canvas.width = targetWidth;
@@ -1378,6 +1493,17 @@ function resizeCanvas() {
 }
 
 window.addEventListener('resize', resizeCanvas);
+
+// Re-check DPR on display changes (e.g. moving to another monitor). The media query fires only for
+// the current DPR, so re-register after each change.
+function watchDprChange() {
+  window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+    .addEventListener('change', () => {
+      resizeCanvas();
+      watchDprChange();
+    }, { once: true });
+}
+watchDprChange();
 
 connect();
 initAudioUI();

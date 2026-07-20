@@ -69,6 +69,8 @@ fn parse_port_arg(args: &[String], flag: &str, default: u16) -> u16 {
 
 pub const WATERFALL_DMA_SIZE: usize = 16384; // Must match FPGA BURST_LEN
 pub const WATERFALL_FFT_SIZE: usize = 8192;
+// How long to suppress waterfall output after a hardware reconfig
+const WATERFALL_SETTLE_MS: u64 = 250;
 pub const TX_DMA_SIZE: usize = 4096;
 
 pub const MIN_TX_GAIN_DB: f64 = -89.75;
@@ -218,6 +220,7 @@ fn run_device_loop(
     // --- Processing state ---
     let mut fft = WaterfallProcessor::new(WATERFALL_FFT_SIZE);
     let mut last_waterfall_time = Instant::now();
+    let mut waterfall_settle_until = Instant::now();
 
     let mut current_lo_hz = initial_lo_hz;
     let mut current_fs_hz = initial_fs_hz;
@@ -607,6 +610,9 @@ fn run_device_loop(
             while let Ok(_) = rx_iq_rx.try_recv() {}
 
             if pending_configs == 0 && pending_dsp_reset == 0 {
+                // Hold off waterfall output for a short window so only clean rows go out
+                waterfall_settle_until = Instant::now() + Duration::from_millis(WATERFALL_SETTLE_MS);
+
                 let mut sys = system.lock().unwrap();
                 // Re-apply DSP config for the new rate, keeping the stored antenna.
                 let rx_antenna = sys.rx_antenna;
@@ -683,7 +689,11 @@ fn run_device_loop(
                     );
                 }
 
-                let _ = rx_waterfall_tx.send(row);
+                // Suppress rows produced while a reconfig is in flight or during the post-reconfig settle window
+                let reconfiguring = pending_configs > 0 || pending_dsp_reset > 0;
+                if !reconfiguring && Instant::now() >= waterfall_settle_until {
+                    let _ = rx_waterfall_tx.send(row);
+                }
                 last_waterfall_time = Instant::now();
 
                 // Optional raw I/Q stream: forward the same wideband burst as interleaved i16 LE

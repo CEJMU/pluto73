@@ -45,9 +45,9 @@ _Requires connecting a physical loopback cable (TX1 -> 20 dB attenuator -> RX1).
 - **`--test-rf-raw-loopback`**: Basic RF loopback verification.
   - _Method_: Transmits a raw 1 kHz complex tone at 48 kHz and reads from the raw wideband ADC buffer via waterfall bursts.
   - _Analysis_: Computes a forward FFT of the captured buffer and measures relative amplitudes at DC (0 Hz), DDS carrier (+50 kHz), DUC target (+51 kHz), and out-of-band noise (+100 kHz) to verify basic hardware RF routing.
-- **`--test-rf-audio-loopback <input.wav> <output.wav> [fs_hz] [rx_gain_db] [lo_hz]`**: End-to-end hardware loopback using a real audio file (RX gain defaults to 40 dB manual, LO defaults to 900 MHz — pass a different `lo_hz` for interference A/B checks).
+- **`--test-rf-audio-loopback <input.wav> <output.wav> [fs_hz] [rx_gain_db] [lo_hz] [usb|lsb]`**: End-to-end hardware loopback using a real audio file (RX gain defaults to 40 dB manual, LO defaults to 900 MHz. Pass a different `lo_hz` for interference A/B checks; sideband defaults to `usb`).
   - _Requirements_: The input WAV must be exactly 48000 Hz mono.
-  - _Method_: SSB modulates the audio file in real-time, streams it to the TX DMA, routes it through the physical loopback path, captures the downconverted signal via the RX audio DMA, demodulates it in software, and writes the output WAV.
+  - _Method_: SSB modulates the audio file in real-time, streams it to the TX DMA, routes it through the physical loopback path, captures the downconverted signal via the RX audio DMA, demodulates it in software, and writes the output WAV. The trailing `usb|lsb` argument sets **both** the TX modulator sideband and the RX demod sideband (kept matched)
   - _Analysis_: Validates audio intelligibility, resampler pacing, and software demodulator behavior on real signals.
 - **`--test-rf-tone-loopback <freq_hz> <duration_s> <output.wav> [chunk_size] [fs_hz]`**: Continuous tone loopback.
   - _Method_: Transmits a continuous single-frequency tone (e.g. 1000 Hz) modulated to SSB USB for the specified duration.
