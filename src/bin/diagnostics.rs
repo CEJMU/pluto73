@@ -16,6 +16,10 @@ pub mod test {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // Optional AD9361 BIST (Built-In Self Test) digital-loopback toggle for the characterization tests that support it
+    // (spec-tx-shape, spec-tx-wideband, dma-carrier-offset): isolates digital/FPGA causes from
+    // analog/RF ones by looping TX->RX inside the AD9361, bypassing DAC/RF/LO/ADC.
+    let loopback = args.iter().any(|arg| arg == "--loopback");
     // --- RF & Hardware Loopback Tests ---
     if args.iter().any(|arg| arg == "--test-rf-raw-loopback") {
         if let Err(err) = test::rf_loopback::run_rf_raw_loopback() {
@@ -36,7 +40,22 @@ fn main() {
             .get(pos + 3)
             .and_then(|s| s.parse().ok())
             .unwrap_or(3_840_000);
-        if let Err(err) = test::rf_loopback::run_rf_audio_loopback(input, output, fs_hz) {
+        let rx_gain_db: f64 = args
+            .get(pos + 4)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(40.0);
+        let lo_hz: i64 = args
+            .get(pos + 5)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(900_000_000);
+        // Optional sideband: "usb" (default) or "lsb".
+        let usb = !args
+            .get(pos + 6)
+            .map(|s| s.eq_ignore_ascii_case("lsb"))
+            .unwrap_or(false);
+        if let Err(err) =
+            test::rf_loopback::run_rf_audio_loopback(input, output, fs_hz, rx_gain_db, lo_hz, usb)
+        {
             eprintln!("RF audio loopback test failed: {}", err);
         }
         std::process::exit(0);
@@ -86,6 +105,12 @@ fn main() {
     if args.iter().any(|arg| arg == "--test-dma-continuity") {
         if let Err(err) = test::dma_diagnostics::run_dma_continuity() {
             eprintln!("DMA continuity test failed: {}", err);
+        }
+        std::process::exit(0);
+    }
+    if args.iter().any(|arg| arg == "--test-dma-carrier-offset") {
+        if let Err(err) = test::dma_diagnostics::run_carrier_offset_probe(loopback) {
+            eprintln!("Carrier offset probe failed: {}", err);
         }
         std::process::exit(0);
     }
@@ -166,14 +191,24 @@ fn main() {
     }
 
     if args.iter().any(|arg| arg == "--test-spec-tx-shape") {
-        if let Err(err) = test::spectral_analysis::run_spec_tx_shape() {
+        if let Err(err) = test::spectral_analysis::run_spec_tx_shape(loopback) {
             eprintln!("Spectral TX shape test failed: {}", err);
         }
         std::process::exit(0);
     }
     if args.iter().any(|arg| arg == "--test-spec-tx-wideband") {
-        if let Err(err) = test::spectral_analysis::run_spec_tx_wideband() {
+        if let Err(err) = test::spectral_analysis::run_spec_tx_wideband(loopback) {
             eprintln!("Spectral TX wideband test failed: {}", err);
+        }
+        std::process::exit(0);
+    }
+    if let Some(pos) = args.iter().position(|arg| arg == "--test-spur-probe") {
+        let fs_hz: i64 = args
+            .get(pos + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3_840_000);
+        if let Err(err) = test::spectral_analysis::run_spur_probe(fs_hz) {
+            eprintln!("Spur probe failed: {}", err);
         }
         std::process::exit(0);
     }

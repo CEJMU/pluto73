@@ -133,9 +133,13 @@ pub fn run_rf_audio_loopback(
     input_path: &str,
     output_path: &str,
     fs_hz: i64,
+    rx_gain_db: f64,
+    lo_hz: i64,
+    usb: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== FPGA RF AUDIO LOOPBACK TEST ===");
-    println!("Uses the proven FPGA audio pipeline (same as FM reception).\n");
+    println!("Uses the proven FPGA audio pipeline (same as FM reception).");
+    println!("Sideband: {}\n", if usb { "USB" } else { "LSB" });
 
     let audio_samples = read_wav_as_f32_mono(input_path)?;
     let duration_s = audio_samples.len() as f64 / AUDIO_SAMPLE_RATE as f64;
@@ -147,13 +151,13 @@ pub fn run_rf_audio_loopback(
     );
 
     println!("Opening PlutoDevice...");
-    let pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
+    let mut pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
     thread::sleep(Duration::from_millis(500));
+    pluto.reset_device_state().map_err(|e| e.to_string())?;
 
     let mut tx = pluto.tx;
     let mut system = pluto.system;
 
-    let lo_hz: i64 = 900_000_000;
     let antenna: u8 = 0;
     let cic_decimation: u32 = ((fs_hz / 960_000).clamp(4, 32) as u32).next_power_of_two();
 
@@ -167,20 +171,23 @@ pub fn run_rf_audio_loopback(
     rx.set_antenna(antenna)?;
     rx.set_frequencies(lo_hz, fs_hz)?;
     rx.set_rf_bandwidth(fs_hz)?;
-    rx.set_gain(GainMode::Manual, Some(30.0))?;
+    rx.set_gain(GainMode::Manual, Some(rx_gain_db))?;
+    println!("RX gain: {} dB (manual), LO: {} MHz", rx_gain_db, lo_hz as f64 / 1e6);
 
     println!("TX: LO={} MHz, +50 kHz DDS offset", lo_hz as f64 / 1e6);
     tx.antenna = antenna;
     tx.set_frequencies(lo_hz, fs_hz)?;
     tx.set_rf_bandwidth(fs_hz)?;
-    tx.set_gain(-15.0)?;
+    tx.set_gain(0.0)?;
     tx.init_channels()?;
 
     let system = Arc::new(Mutex::new(system));
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     let filter_bw = 3_000.0f32;
-    let bfo_hz = filter_bw / 2.0;
+    // Sign of bfo_hz selects the demod sideband (+ = USB, - = LSB); magnitude unused by the
+    // analytic demod. Must match the TX modulator's sideband below.
+    let bfo_hz = if usb { filter_bw / 2.0 } else { -filter_bw / 2.0 };
     let if_cutoff_hz = filter_bw;
     let demod = Demodulation::SSB {
         fs: AUDIO_SAMPLE_RATE as f32,
@@ -199,8 +206,10 @@ pub fn run_rf_audio_loopback(
         target_audio_fs / 1000.0
     );
     println!(
-        "SSB USB demod: BFO={} Hz, IF cutoff={} Hz",
-        bfo_hz, if_cutoff_hz
+        "SSB {} demod: BFO={} Hz, IF cutoff={} Hz",
+        if usb { "USB" } else { "LSB" },
+        bfo_hz,
+        if_cutoff_hz
     );
 
     let system_rx = system.clone();
@@ -301,7 +310,8 @@ pub fn run_rf_audio_loopback(
     thread::sleep(Duration::from_millis(200));
 
     println!("Transmitting audio (clock-paced)...");
-    let mut modulator = TxModulator::new(TxMode::USB, 3_000.0, fs_hz as f32);
+    let tx_mode = if usb { TxMode::USB } else { TxMode::LSB };
+    let mut modulator = TxModulator::new(tx_mode, 3_000.0, fs_hz as f32);
     let dma_audio_fs = tx_dma_audio_fs(fs_hz as f32);
     let mut resampler = IqResampler::for_dma_fs(dma_audio_fs);
     println!(
@@ -415,8 +425,9 @@ pub fn run_rf_tone_loopback(
     let total_samples = (duration_s * AUDIO_SAMPLE_RATE as f32) as usize;
 
     println!("Opening PlutoDevice...");
-    let pluto = PlutoDevice::open(16384, chunk_size).map_err(|e| e.to_string())?;
+    let mut pluto = PlutoDevice::open(16384, chunk_size).map_err(|e| e.to_string())?;
     thread::sleep(Duration::from_millis(500));
+    pluto.reset_device_state().map_err(|e| e.to_string())?;
 
     let mut tx = pluto.tx;
     let mut system = pluto.system;

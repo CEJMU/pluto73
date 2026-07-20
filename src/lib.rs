@@ -177,15 +177,20 @@ fn run_device_loop(
     let mut state = ControlState::new(99_300_000);
 
     // --- Open and configure the radio ---
-    let pluto =
+    let mut pluto =
         PlutoDevice::open(WATERFALL_DMA_SIZE, TX_DMA_SIZE).map_err(|err| err.to_string())?;
     thread::sleep(Duration::from_millis(500));
+
+    // Start from a known-good baseline regardless of what a killed predecessor left behind
+    // (active TX, an odd sample rate, a stuck DMA); avoids the reconfig wedge documented in TEST.md.
+    pluto
+        .reset_device_state()
+        .map_err(|err| format!("Config error: {}", err))?;
 
     let mut device = pluto.rx;
     let mut tx_device = pluto.tx;
     let mut system_device = pluto.system;
 
-    device.disable_bb_fir().ok();
     device.sampling_frequency = initial_fs_hz;
 
     system_device.rx_apply_dsp_config(initial_antenna, initial_fs_hz);

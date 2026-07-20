@@ -1,7 +1,89 @@
+use industrial_io as iio;
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 
 const AUDIO_SAMPLE_RATE: u32 = 48_000;
+
+/// Sets the AD9361 BIST loopback mode via industrial_io attributes (1 = digital TX->RX inside the
+/// AD9361, bypassing DAC/RF/LO/ADC; 0 = off). Falls back to the debugfs path when the debug
+/// attributes are disabled in the running firmware.
+pub fn set_ad9361_loopback(mode: u8) -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(ctx) = iio::Context::new() {
+        if let Some(dev) = ctx.find_device("ad9361-phy") {
+            if dev.attr_write("loopback", mode as i64).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    // Fallback to debugfs path if industrial_io debug attributes are disabled
+    for entry in std::fs::read_dir("/sys/bus/iio/devices")? {
+        let entry = entry?;
+        if let Ok(name) = std::fs::read_to_string(entry.path().join("name")) {
+            if name.trim() == "ad9361-phy" {
+                let dbg = format!(
+                    "/sys/kernel/debug/iio/{}/loopback",
+                    entry.file_name().to_string_lossy()
+                );
+                std::fs::write(&dbg, format!("{}\n", mode))?;
+                return Ok(());
+            }
+        }
+    }
+    Err("ad9361-phy device not found".into())
+}
+
+/// Runs `body` with the AD9361 in BIST digital loopback, restoring loopback = 0 afterward
+/// Prints `skip_label` and skips the body when the loopback mode cannot be set (e.g. debug attributes disabled in the running firmware).
+/// Use this for A/B cases where the loopback capture is the point and there is no meaningful RF fallback.
+pub fn with_ad9361_loopback<F>(skip_label: &str, body: F) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+{
+    match set_ad9361_loopback(1) {
+        Ok(()) => {
+            let result = body();
+            let _ = set_ad9361_loopback(0);
+            result
+        }
+        Err(e) => {
+            println!("{}: {}", skip_label, e);
+            Ok(())
+        }
+    }
+}
+
+/// RAII guard that holds the AD9361 in BIST digital loopback for the duration of a scope and
+/// restores loopback = 0 on drop (covering `?` early-returns and panics). Use this for a whole-test
+/// `--loopback` toggle: unlike `with_ad9361_loopback`, when the mode is unavailable it prints
+/// `skip_label` and leaves the guard inactive so captures fall back to the normal RF path.
+pub struct LoopbackGuard {
+    active: bool,
+}
+
+impl LoopbackGuard {
+    /// Enables loopback; on failure prints `skip_label` and yields an inactive (no-op) guard.
+    pub fn enable(skip_label: &str) -> Self {
+        match set_ad9361_loopback(1) {
+            Ok(()) => {
+                println!("AD9361 BIST digital loopback ENABLED (TX->RX, RF path bypassed)");
+                LoopbackGuard { active: true }
+            }
+            Err(e) => {
+                println!("{}: {}", skip_label, e);
+                LoopbackGuard { active: false }
+            }
+        }
+    }
+}
+
+impl Drop for LoopbackGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = set_ad9361_loopback(0);
+        }
+    }
+}
 
 /// Reads a WAV file as mono f32 samples.
 /// Requires the WAV file to have a sample rate of exactly 48000 Hz.

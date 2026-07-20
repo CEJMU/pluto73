@@ -20,8 +20,6 @@ export PATH        := $(CROSS_COMPILE_PATH):$(PATH)
 export TOOLCHAIN_DIR
 export VIVADO_SETTINGS
 
-FW_MAKE            := $(MAKE) -C $(FW_DIR) BR2_TOOLCHAIN_EXTERNAL_PREINSTALLED=y BR2_TOOLCHAIN_EXTERNAL_PATH=$(TOOLCHAIN_DIR)
-
 # --- Target device -----------------------------------------------------------
 TARGET_IP    := 192.168.2.1
 TARGET_USER  := root
@@ -92,17 +90,30 @@ ifneq (,$(shell command -v dfu-suffix 2>/dev/null))
 FLASH_TARGETS += build/pluto.dfu build/uboot-env.dfu build/boot.dfu
 endif
 
-.PHONY: bitstream firmware
-bitstream:                ## Synth+impl the FPGA project and export system_top.xsa (LONG; needs Vivado)
+# --- HDL source freshness -----------------------------------------------------
+# Removes the stale xsa at BOTH levels when any HDL source is newer, so the next Vivado sub-make re-fires a fresh bitstream run.
+XSA       := $(FW_DIR)/build/system_top.xsa
+INNER_XSA := $(FW_DIR)/hdl/projects/pluto/pluto.sdk/system_top.xsa
+HDL_SRCS  := $(wildcard hdl_modules/*.v) $(wildcard hdl_bd/*.tcl)
+
+.PHONY: hdl-check
+hdl-check:
+	@if [ -f $(XSA) ] && [ -n "$$(find $(HDL_SRCS) -newer $(XSA) 2>/dev/null)" ]; then \
+	  echo "==> HDL sources changed since last bitstream -- forcing a fresh Vivado run"; \
+	  rm -f $(XSA) $(INNER_XSA); \
+	fi
+
+.PHONY: bitstream firmware bitstream-incr firmware-incr
+bitstream: hdl-check      ## Synth+impl the FPGA project and export system_top.xsa (LONG; needs Vivado)
 	# Drives the fw Makefile's own xsa rule, which runs the Vivado project build
 	# (system_project.tcl -> our wrapper system_bd.tcl -> hdl_bd/ + hdl_modules),
 	# generates the bitstream, and write_hw_platform's system_top.xsa into build/.
-	source $(VIVADO_SETTINGS) && $(FW_MAKE) build/system_top.xsa
+	source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) build/system_top.xsa
 
-firmware:                 ## Build all flashable images end-to-end (frm + dfu + boot; auto-builds bitstream+xsa first)
+firmware: hdl-check       ## Build all flashable images end-to-end (frm + dfu + boot; auto-builds bitstream+xsa first)
 	# Chains synth -> impl -> bitstream -> xsa -> fsbl/u-boot/kernel/dtb/rootfs -> itb -> the
 	# flashing artifacts, with no manual steps.
-	source $(VIVADO_SETTINGS) && $(FW_MAKE) $(FLASH_TARGETS)
+	source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) $(FLASH_TARGETS)
 	@echo "Flashing artifacts ready in $(FW_DIR)/build/ ($(FLASH_TARGETS))"
 
 .PHONY: bake certs
@@ -112,7 +123,7 @@ bake: firmware certs      ## Cross-build the app and bake it (+ frontend + TLS c
 	# board/pluto/post-build.sh, which installs the freshly built binary, static/, and
 	# cert.pem/key.pem into /opt/pluto and adds the S99pluto autostart script.
 	$(MAKE) app
-	source $(VIVADO_SETTINGS) && $(FW_MAKE) $(FLASH_TARGETS)
+	source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) $(FLASH_TARGETS)
 	@echo "Flashing artifacts (app baked in) ready in $(FW_DIR)/build/ ($(FLASH_TARGETS))"
 
 certs:                    ## Generate a self-signed TLS cert/key (skipped if cert.pem/key.pem already exist)
@@ -129,7 +140,7 @@ certs:                    ## Generate a self-signed TLS cert/key (skipped if cer
 # =============================================================================
 .PHONY: clean distclean
 clean:                    ## Remove build artifacts (firmware build/, Vivado project, cargo target); keeps patches
-	-source $(VIVADO_SETTINGS) && $(FW_MAKE) clean
+	-source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) clean
 	-cargo clean
 
 distclean: clean          ## clean + revert ALL patches, resetting the submodule trees to pristine ADI

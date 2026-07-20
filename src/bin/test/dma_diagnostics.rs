@@ -1,6 +1,6 @@
 use pluto::device::{GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, PlutoTxDevice};
 use pluto::tx_dsp::{TxMode, TxModulator};
-use crate::test::dsp_helpers::{fft_mags_i16, write_wav_i16_stereo};
+use crate::test::dsp_helpers::{fft_mags_i16, write_wav_i16_stereo, LoopbackGuard};
 use std::f64::consts::PI;
 use std::io::Read;
 use std::os::unix::io::AsRawFd;
@@ -207,6 +207,174 @@ pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 
+
+/// Measures the true transmit carrier and opposite-sideband suppression through the audio DMA
+/// path with the RX DDS deliberately offset from the TX DDS. With the RX DDS at -45 kHz the TX
+/// carrier (LO +50 kHz) lands at +5 kHz, outside the fabric DC blocker's notch. A full-capture
+/// FFT over several seconds gives sub-Hz resolution bandwidth, so the measurement floor lies far
+/// below the wideband burst test's. The wanted 1 kHz USB tone lands at +6 kHz and the
+/// opposite-sideband image at +4 kHz; the RX chain's own LO leakage lands at -45 kHz, cleanly
+/// separated from every TX product.
+pub fn run_carrier_offset_probe(loopback: bool) -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== TX CARRIER / SIDEBAND PROBE (audio DMA, off-DC carrier) ===\n");
+
+    let pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
+    thread::sleep(Duration::from_millis(500));
+
+    let mut rx = pluto.rx;
+    let mut tx = pluto.tx;
+    let mut system = pluto.system;
+
+    let lo_hz: i64 = 900_000_000;
+    let fs_hz: i64 = 3_840_000;
+    let antenna: u8 = 0;
+    let cic_decimation: u32 = 4;
+    let dma_fs = (fs_hz / cic_decimation as i64 / 4) as f64; // 240 kHz
+
+    system.rx_apply_dsp_config(antenna, fs_hz);
+    system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
+    system.reset_audio_dma_controller();
+    // RX DDS 5 kHz short of the TX DDS: the TX carrier lands at +5 kHz, clear of the DC notch.
+    system.rx_set_dds(-45_000.0, (fs_hz * 2) as f64);
+
+    rx.set_antenna(antenna)?;
+    rx.set_frequencies(lo_hz, fs_hz)?;
+    rx.set_rf_bandwidth(fs_hz)?;
+    rx.set_gain(GainMode::Manual, Some(40.0))?;
+
+    tx.antenna = antenna;
+    tx.set_frequencies(lo_hz, fs_hz)?;
+    tx.set_rf_bandwidth(fs_hz)?;
+    tx.init_channels()?;
+
+    let base_val = 0x01 | (cic_decimation << 4) | ((antenna as u32) << 13);
+    system.write_gpio_rx(0x00, base_val);
+
+    let _loopback = loopback
+        .then(|| LoopbackGuard::enable("--loopback requested but AD9361 loopback unavailable; capturing over RF"));
+
+    let system = Arc::new(Mutex::new(system));
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
+    // Max magnitude in a +-2 Hz window around each target
+    fn measure(i: &[i16], q: &[i16], fs: f64, targets: &[(&str, f64)]) -> Vec<(String, f64)> {
+        let mut freqs = Vec::new();
+        for &(_, c) in targets {
+            for k in -4i32..=4 {
+                freqs.push(c + k as f64 * 0.5);
+            }
+        }
+        let mags = fft_mags_i16(i, q, &freqs, fs);
+        targets
+            .iter()
+            .enumerate()
+            .map(|(t, &(name, _))| {
+                let s = t * 9;
+                (
+                    name.to_string(),
+                    mags[s..s + 9].iter().cloned().fold(0.0, f64::max),
+                )
+            })
+            .collect()
+    }
+
+    // --- Keyed transmitter, silent audio: static DAC/LO bias only ---
+    println!("--- Keyed, silence (static DAC bias) ---");
+    tx.set_gain(0.0)?;
+    let stop_tx = Arc::new(AtomicBool::new(false));
+    let stop_tx2 = stop_tx.clone();
+    let tx_handle = thread::spawn(move || {
+        let zi = vec![0i16; 4096];
+        let zq = vec![0i16; 4096];
+        while !stop_tx2.load(Ordering::Relaxed) {
+            let _ = tx.write_buffer(&zi, &zq);
+        }
+        tx
+    });
+    thread::sleep(Duration::from_millis(500));
+    let silence = capture_audio_dma(&system, &stop_flag, Duration::from_secs(3))?;
+    stop_tx.store(true, Ordering::Relaxed);
+    let mut tx = tx_handle.join().map_err(|_| "TX thread panicked")?;
+    let silence_res = measure(
+        &silence.0,
+        &silence.1,
+        dma_fs,
+        &[("carrier +5 kHz", 5000.0), ("noise +20 kHz", 20000.0)],
+    );
+    for (name, mag) in &silence_res {
+        println!("  {:18} {:10.4}", name, mag);
+    }
+    let carrier_silent = silence_res[0].1;
+
+    // --- Keyed, 1 kHz USB tone through the production modulator ---
+    println!("\n--- Keyed, 1 kHz USB tone (production modulator) ---");
+    let stop_tx = Arc::new(AtomicBool::new(false));
+    let stop_tx2 = stop_tx.clone();
+    let tx_handle = thread::spawn(move || {
+        let mut modulator = TxModulator::new(TxMode::USB, 3_000.0, 3_840_000.0);
+        let chunk_size = 4096;
+        let mut t_audio = 0u64;
+        while !stop_tx2.load(Ordering::Relaxed) {
+            let audio: Vec<f32> = (0..chunk_size)
+                .map(|n| {
+                    let t = (t_audio + n as u64) as f32 / 48000.0;
+                    (2.0 * std::f32::consts::PI * 1000.0 * t).sin()
+                })
+                .collect();
+            t_audio += chunk_size as u64;
+            let mut out_i = Vec::new();
+            let mut out_q = Vec::new();
+            modulator.process_chunk(&audio, &mut out_i, &mut out_q);
+            let _ = tx.write_buffer(&out_i, &out_q);
+        }
+        tx
+    });
+    thread::sleep(Duration::from_millis(500));
+    let modulated = capture_audio_dma(&system, &stop_flag, Duration::from_secs(4))?;
+    stop_tx.store(true, Ordering::Relaxed);
+    let mut tx = tx_handle.join().map_err(|_| "TX thread panicked")?;
+    let _ = tx.set_gain(-89.75);
+
+    let mod_res = measure(
+        &modulated.0,
+        &modulated.1,
+        dma_fs,
+        &[
+            ("wanted +6 kHz", 6000.0),
+            ("carrier +5 kHz", 5000.0),
+            ("opposite +4 kHz", 4000.0),
+            ("DC (blocked)", 0.0),
+            ("RX LO leak -45 kHz", -45000.0),
+            ("noise +20 kHz", 20000.0),
+        ],
+    );
+    let wanted = mod_res[0].1.max(1e-9);
+    println!("  {:18} {:>10}  {:>9}", "target", "magnitude", "dBc");
+    for (name, mag) in &mod_res {
+        println!(
+            "  {:18} {:10.4}  {:+9.1}",
+            name,
+            mag,
+            20.0 * (mag / wanted).log10()
+        );
+    }
+
+    let carrier_mod = mod_res[1].1;
+    println!("\nCarrier split (silent vs modulated):");
+    println!(
+        "  static DAC/LO bias : {:.4} ({:+.1} dBc)",
+        carrier_silent,
+        20.0 * (carrier_silent.max(1e-9) / wanted).log10()
+    );
+    println!(
+        "  during modulation  : {:.4} ({:+.1} dBc)",
+        carrier_mod,
+        20.0 * (carrier_mod.max(1e-9) / wanted).log10()
+    );
+
+    println!("\n=== TX CARRIER / SIDEBAND PROBE COMPLETE ===");
+    Ok(())
+}
 
 /// Confirms whether `read_audio_dma_samples`'s submit-before-read ordering can tear a ping-pong
 /// buffer. Uses the RX DDS to turn the always-present DC / LO-leakage carrier into a steady tone,

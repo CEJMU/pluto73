@@ -36,7 +36,7 @@ pub fn run_pacing_dma_delay(rate_hz: Option<i64>) -> Result<(), Box<dyn std::err
     tx.antenna = antenna;
     tx.set_frequencies(lo_hz, fs_hz)?;
     tx.set_rf_bandwidth(fs_hz)?;
-    tx.set_gain(-20.0)?;
+    tx.set_gain(0.0)?;
     tx.init_channels()?;
 
     let mut modulator = TxModulator::new(TxMode::USB, 3_000.0, fs_hz as f32);
@@ -159,7 +159,7 @@ pub fn run_pacing_dma_delay(rate_hz: Option<i64>) -> Result<(), Box<dyn std::err
         let samples = (measure_pushes * chunk_size) as f64;
         let drain = samples / secs;
         let total_interp = (fs_hz as f64 / 48000.0).round().max(16.0).min(256.0);
-        let cur_divisor = 5.0 / 2.0; // 2.5 divisor baked into the current bitstream's 2-in-5 strobe
+        let cur_divisor = 2.0;
         let l_clk = drain * cur_divisor * total_interp;
         let divisor_for_48k = cur_divisor * drain / 48000.0;
 
@@ -175,7 +175,7 @@ pub fn run_pacing_dma_delay(rate_hz: Option<i64>) -> Result<(), Box<dyn std::err
             fs_hz as f64 / 1e6
         );
         println!(
-            "  divisor for 48k = {:.2}  (current bitstream uses {:.1})",
+            "  divisor for 48k = {:.2}  (configured strobe divisor {:.1})",
             divisor_for_48k, cur_divisor
         );
     }

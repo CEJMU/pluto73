@@ -149,10 +149,12 @@ pub struct PlutoSystem {
     // FPGA-fabric DSP register shadow. Mirrors the exact hardware state
     pub rx_antenna: u8,
     pub rx_cic_decimation: u32,
+    pub rx_burst_gate: bool,
     pub tx_antenna: u8,
     pub tx_cic_interpolation: u32,
     pub tx_phase_inc: u32,
     pub tx_dds_offset_hz: f64,
+    pub tx_dsp_enabled: bool,
 
     pub is_configuring: bool,
     pub dma_running: bool,
@@ -253,6 +255,23 @@ impl PlutoDevice {
             },
             system,
         })
+    }
+
+    /// Brings the hardware to a known-good baseline before a fresh configuration.
+    /// Mutes TX, resets FPGA DSP/DDS/DMA, and returns the AD9361 to the 3.84 MHz FIR-bypassed rate.
+    pub fn reset_device_state(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let _ = self.tx.set_gain(-89.75);
+
+        self.system.reset_gpio_to_default();
+        self.system.reset_audio_dma_controller();
+
+        self.rx.disable_bb_fir()?;
+        let lo_hz = self.rx.frequency;
+        self.rx.set_frequencies(lo_hz, 3_840_000)?;
+
+        // Let the BBPLL / interface clock relock before the caller retunes.
+        thread::sleep(Duration::from_millis(50));
+        Ok(())
     }
 }
 
@@ -805,13 +824,16 @@ impl PlutoTxDevice {
 impl PlutoSystem {
     fn rx_base_val(&self) -> u32 {
         // Bit 0: Active-low reset (1 = run, 0 = reset)
-        // Bit 1: Unused/Reserved
+        // Bit 1: Waterfall burst trigger, pulsed on offset 0x00 by `trigger_waterfall_burst`, defaults to 0 here
         // Bit 2: Gated burst mode enabled (1 = enabled, 0 = bypass direct DMA-to-ADC)
         // Bit 3: rx_cic_config_valid is pulsed on offset 0x00 by `rx_apply_dsp_config`, defaults to 0 here
         // Bits [11:4]: RX CIC Decimation Rate
         // Bit 12: rx_dds_valid is pulsed on offset 0x00 by `rx_set_dds`, defaults to 0 here
         // Bit 13: RX antenna select (0 = Channel 1, 1 = Channel 2)
-        (self.rx_cic_decimation << 4) | 0x01 | (1 << 2) | ((self.rx_antenna as u32) << 13)
+        (self.rx_cic_decimation << 4)
+            | 0x01
+            | ((self.rx_burst_gate as u32) << 2)
+            | ((self.rx_antenna as u32) << 13)
     }
 
     /// Stores the active RX antenna selection and writes it (with the current decimation) to the AXI GPIO controller.
@@ -819,6 +841,14 @@ impl PlutoSystem {
         self.rx_antenna = rx_antenna;
         let rx_val = self.rx_base_val();
         self.write_gpio_rx(0x00, rx_val);
+    }
+
+    /// Enables (true) or bypasses (false) the RX burst gate (bit 2). When bypassed the wideband ADC
+    /// streams continuously to the DMA instead of in triggered bursts.
+    pub fn set_rx_burst_gate_enabled(&mut self, enabled: bool) {
+        self.rx_burst_gate = enabled;
+        let base_val = self.rx_base_val();
+        self.write_gpio_rx(0x00, base_val);
     }
 
     /// Triggers a single gated burst transfer of ADC samples to DDR memory for the waterfall display.
@@ -888,7 +918,8 @@ impl PlutoSystem {
         // Bit 3: tx_cic_config_valid is pulsed on offset 0x00 by `tx_apply_dsp_config`, defaults to 0 here
         // Bits [11:4]: CIC interpolation rate
         // Bits [27:12]: tx_strobe_gen phase increment
-        1 | ((self.tx_antenna as u32) << 1)
+        (self.tx_dsp_enabled as u32)
+            | ((self.tx_antenna as u32) << 1)
             | (self.tx_cic_interpolation << 4)
             | (self.tx_phase_inc << 12)
     }
@@ -952,6 +983,13 @@ impl PlutoSystem {
     /// Stores the active TX antenna selection and writes it (with the current rates) to the AXI GPIO controller.
     pub fn tx_update_gpio_antenna(&mut self, tx_antenna: u8) {
         self.tx_antenna = tx_antenna;
+        let base_val = self.tx_base_val();
+        self.write_gpio_tx(0x00, base_val);
+    }
+
+    /// Enables (true) or bypasses (false) the custom FPGA TX DSP pipeline (dsp_mux_tx enabled bit 0).
+    pub fn set_tx_dsp_enabled(&mut self, enabled: bool) {
+        self.tx_dsp_enabled = enabled;
         let base_val = self.tx_base_val();
         self.write_gpio_tx(0x00, base_val);
     }
@@ -1247,24 +1285,26 @@ fn init_mem_system() -> Result<PlutoSystem, Box<dyn std::error::Error>> {
         uio_file,
         rx_antenna: 0,
         rx_cic_decimation: 0,
+        rx_burst_gate: true,
         tx_antenna: 0,
         tx_cic_interpolation: 0,
         tx_phase_inc: 0,
         tx_dds_offset_hz: 50_000.0,
+        tx_dsp_enabled: true,
         is_configuring: false,
         dma_running: false,
         ping_pong: false,
     })
 }
 
-/// AD9361 TX interface clock (fabric `l_clk`) frequency for a baseband sample rate `fs`, when internal FIR is disabled
+/// AD9361 TX interface clock (fabric `l_clk`) frequency for a baseband sample rate `fs`.
 fn tx_interface_clock_hz(fs: f64) -> f64 {
-    2.5 * fs
+    2.0 * fs
 }
 
 /// 16-bit phase increment for `tx_sample_enable` so its clock-enable strobe lands at exactly `fs`:
 /// `strobe = l_clk * phase_inc / 65536`  =>  `phase_inc = round(65536 * fs / l_clk)`.
-/// `fs/l_clk <= 0.4`, so the result always fits in 16 bits.
+/// With `l_clk = 2 * fs` this is `round(65536 * 0.5) = 32768`. `fs/l_clk = 0.5`, so it fits in 16 bits.
 fn tx_strobe_phase_inc(fs: f64) -> u32 {
     let l_clk = tx_interface_clock_hz(fs);
     ((65536.0 * fs / l_clk).round() as i64).clamp(0, 0xFFFF) as u32

@@ -24,8 +24,9 @@ pub fn run_narrowband_rx(rate_hz: i64, secs: f32) -> Result<(), Box<dyn std::err
     let lo_hz = 900_000_000i64;
     let antenna = 0u8;
 
-    let pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
+    let mut pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
     thread::sleep(Duration::from_millis(500));
+    pluto.reset_device_state().map_err(|e| e.to_string())?;
     let mut rx = pluto.rx;
     let mut system = pluto.system;
 
@@ -198,8 +199,9 @@ pub fn run_narrowband_loopback(rate_hz: i64, _secs: f32) -> Result<(), Box<dyn s
     let tone_hz = 1000.0f32;
     const AFS: f32 = 48_000.0;
 
-    let pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
+    let mut pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
     thread::sleep(Duration::from_millis(500));
+    pluto.reset_device_state().map_err(|e| e.to_string())?;
     let mut tx = pluto.tx;
     let mut rx = pluto.rx;
 

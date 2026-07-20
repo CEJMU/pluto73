@@ -45,7 +45,7 @@ _Requires connecting a physical loopback cable (TX1 -> 20 dB attenuator -> RX1).
 - **`--test-rf-raw-loopback`**: Basic RF loopback verification.
   - _Method_: Transmits a raw 1 kHz complex tone at 48 kHz and reads from the raw wideband ADC buffer via waterfall bursts.
   - _Analysis_: Computes a forward FFT of the captured buffer and measures relative amplitudes at DC (0 Hz), DDS carrier (+50 kHz), DUC target (+51 kHz), and out-of-band noise (+100 kHz) to verify basic hardware RF routing.
-- **`--test-rf-audio-loopback <input.wav> <output.wav> [fs_hz]`**: End-to-end hardware loopback using a real audio file.
+- **`--test-rf-audio-loopback <input.wav> <output.wav> [fs_hz] [rx_gain_db] [lo_hz]`**: End-to-end hardware loopback using a real audio file (RX gain defaults to 40 dB manual, LO defaults to 900 MHz — pass a different `lo_hz` for interference A/B checks).
   - _Requirements_: The input WAV must be exactly 48000 Hz mono.
   - _Method_: SSB modulates the audio file in real-time, streams it to the TX DMA, routes it through the physical loopback path, captures the downconverted signal via the RX audio DMA, demodulates it in software, and writes the output WAV.
   - _Analysis_: Validates audio intelligibility, resampler pacing, and software demodulator behavior on real signals.
@@ -62,6 +62,9 @@ _Requires connecting a physical loopback cable (TX1 -> 20 dB attenuator -> RX1).
 - **`--test-dma-continuity`**: Checks phase continuity of the RX audio DMA.
   - _Method_: Transmits a seamlessly looping cyclic 3 kHz tone (continuous, bypassing TX DMA pushing seams).
   - _Analysis_: Captures the loopback audio DMA and measures the per-sample phase delta. A jump in the middle of a buffer indicates **buffer tearing** (software reading while hardware overwrites); a jump at a buffer boundary indicates **dropped buffers**.
+- **`--test-dma-carrier-offset [--loopback]`**: High-resolution TX carrier / opposite-sideband suppression probe.
+  - _Method_: Programs the RX DDS to -45 kHz instead of -50 kHz, so the TX carrier (LO +50 kHz) lands at +5 kHz in the audio DMA passband, **outside the fabric DC blocker**, which otherwise silently removes the carrier and flatters every audio-DMA measurement. The wanted 1 kHz USB tone lands at +6 kHz, the opposite-sideband image at +4 kHz, and the RX chain's own LO leakage at -45 kHz, all cleanly separated. Captures with the transmitter keyed but silent (static DAC bias only) and with a modulated tone.
+  - _Analysis_: A single full-capture FFT over 3-4s gives sub-Hz resolution bandwidth (noise floor approx. −68 dBc), three decades sharper than the wideband burst test's 234 Hz bins. Reports carrier, opposite sideband, blocked-DC residual and noise, each in dBc relative to the wanted tone, plus the static-vs-modulated carrier split.
 
 ### 3. Narrowband & Low Visual Span Tests (`narrowband.rs`)
 
@@ -87,8 +90,10 @@ _Requires connecting a physical loopback cable (TX1 -> 20 dB attenuator -> RX1).
 ### 6. Spectral Purity & Sweeps (`spectral_analysis.rs`)
 
 - **`--test-spec-audio-sweep [tone_hz] [duration_s] [--save]`**: Sweeps center frequencies, spans, and offsets in a grid to verify demodulator correctness (matching tone recovery and spur suppression) across the operating space.
-- **`--test-spec-tx-shape`**: Measures the spectral roll-off and out-of-band shape of the transmit signal.
-- **`--test-spec-tx-wideband`**: Captures raw ADC wideband buffers to audit occupied bandwidth, sideband conventions (USB vs. LSB), and the crucial DC carrier leakage for QO-100 operations.
+- **`--test-spec-tx-shape [--loopback]`**: Measures the spectral roll-off and out-of-band shape of the transmit signal.
+- **`--test-spec-tx-wideband [--loopback]`**: Captures raw ADC wideband buffers to audit occupied bandwidth, sideband conventions (USB vs. LSB), and the crucial DC carrier leakage for QO-100 operations.
+
+  _`--loopback` (supported by `--test-spec-tx-shape`, `--test-spec-tx-wideband`, and `--test-dma-carrier-offset`): routes the capture through the AD9361 BIST (Built-In Self-Test) digital loopback, bypassing DAC/RF/LO/ADC. A spur/impairment that persists in loopback is digital/FPGA; one that disappears is analog/RF. Falls back to the normal RF path (with a printed notice) if the loopback mode is unavailable in the running firmware._
 
 ### 7. Timing & Pacing Tests (`timing_pacing.rs`)
 
