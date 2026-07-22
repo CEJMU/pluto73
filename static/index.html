@@ -17,7 +17,7 @@
         </div>
       </div>
 
-      <!-- Antenna Waterfall Speed SDR Center -->
+      <!-- Antenna Waterfall Speed FFT Resolution -->
       <div class="toolbar">
         <div class="control-group">
           <label for="antenna-select">Antenna:</label>
@@ -58,17 +58,18 @@
             </option>
           </select>
         </div>
+      </div>
 
-        <div class="control-group push-right">
-          <input
-            type="checkbox"
-            id="sync-rf-bw"
-            checked
-            class="sync-checkbox"
-            disabled
-          />
-          <label for="sync-rf-bw" class="sync-label">Sync</label>
-          <label for="rf-bandwidth" class="ml-5">Analog BW (Hz):</label>
+      <!-- SDR Center | Analog BW -->
+      <div class="toolbar mt-n8">
+        <div class="control-group">
+          <label for="center-freq">SDR Center (Hz):</label>
+          <input type="number" id="center-freq" value="99300000" />
+          <button id="set-center-freq">Set</button>
+        </div>
+
+        <div class="control-group ml-20">
+          <label for="rf-bandwidth">RX Analog BW (Hz):</label>
           <input
             type="number"
             id="rf-bandwidth"
@@ -79,12 +80,20 @@
             disabled
           />
           <button id="set-rf-bandwidth" disabled>Set</button>
-        </div>
-
-        <div class="control-group">
-          <label for="center-freq">SDR Center (Hz):</label>
-          <input type="number" id="center-freq" value="99300000" />
-          <button id="set-center-freq">Set</button>
+          <input
+            type="checkbox"
+            id="sync-rf-bw"
+            checked
+            class="sync-checkbox ml-5"
+            title="Keeps the analog RX filter bandwidth locked to the hardware span (sample rate). Uncheck to enter a value manually - note that zooming re-syncs it to the new span."
+            disabled
+          />
+          <label
+            for="sync-rf-bw"
+            class="sync-label"
+            title="Keeps the analog RX filter bandwidth locked to the hardware span (sample rate). Uncheck to enter a value manually - note that zooming re-syncs it to the new span."
+            >Sync</label
+          >
         </div>
       </div>
       <!-- Waterfall -->
@@ -93,7 +102,7 @@
         <div id="hover-tooltip"></div>
       </div>
       <!-- Waterfall Visual Scale -->
-      <div class="toolbar mb-20">
+      <div class="toolbar wf-scale-toolbar">
         <div class="control-group">
           <span>Waterfall Scale:</span>
         </div>
@@ -125,39 +134,39 @@
           <button id="wf-reset">Reset Defaults</button>
         </div>
       </div>
-      <!-- Listening Frequency | Filter -->
-      <div class="toolbar">
-        <div class="control-group">
-          <label for="frequency">Listening Frequency (Hz):</label>
-          <input type="number" id="frequency" value="99300000" />
-          <button id="set-frequency" disabled>Set</button>
+      <!-- Listening Controls (Frequency, Filter, Volume) -->
+      <div class="toolbar rx-controls">
+        <div class="rx-row">
+          <div class="control-group">
+            <label for="frequency">Listening Frequency (Hz):</label>
+            <input type="number" id="frequency" value="99300000" />
+            <button id="set-frequency" disabled>Set</button>
+          </div>
+          <div class="control-group push-right">
+            <label for="mode-select">Filter:</label>
+            <select id="mode-select">
+              <option value="FM">FM</option>
+              <option value="USB">USB</option>
+              <option value="LSB">LSB</option>
+            </select>
+            <input
+              type="number"
+              id="filter-bw"
+              value="15000"
+              title="Filter Bandwidth (Hz)"
+            />
+            <button id="set-filter-bw">Set BW</button>
+          </div>
         </div>
-        <div class="control-group push-right">
-          <label for="mode-select">Filter:</label>
-          <select id="mode-select">
-            <option value="FM">FM</option>
-            <option value="USB">USB</option>
-            <option value="LSB">LSB</option>
-          </select>
-          <input
-            type="number"
-            id="filter-bw"
-            value="15000"
-            title="Filter Bandwidth (Hz)"
-          />
-          <button id="set-filter-bw">Set BW</button>
-        </div>
-      </div>
-
-      <!-- Volume Mute -->
-      <div class="toolbar">
-        <div class="control-group">
-          <label for="vol">Volume:</label>
-          <input type="range" id="vol" min="0" max="200" value="0" />
-        </div>
-        <div class="control-group">
-          <label for="mute-checkbox">Mute:</label>
-          <input type="checkbox" id="mute-checkbox" checked disabled />
+        <div class="rx-row-footer">
+          <div class="control-group">
+            <label for="vol">Volume:</label>
+            <input type="range" id="vol" min="0" max="200" value="0" />
+          </div>
+          <div class="control-group ml-15">
+            <label for="mute-checkbox">Mute:</label>
+            <input type="checkbox" id="mute-checkbox" checked disabled />
+          </div>
         </div>
       </div>
 
@@ -250,77 +259,55 @@
       <div class="tx-status-bar">
         <div class="status-row">
           <span
-            ><strong>TX Mode:</strong>
-            <span id="tx-status-mode-val" class="tx-val">USB</span></span
-          >
-          <span
-            ><strong>TX Bandwidth:</strong>
-            <span id="tx-status-bw-val" class="tx-val">2800 Hz</span></span
-          >
-          <span
-            ><strong>TX Sample Rate:</strong>
-            <span id="tx-status-rate-val" class="tx-val">48.00 kHz</span></span
-          >
-        </div>
-        <div class="status-row">
-          <span
             ><strong>TX LO Freq:</strong>
             <span id="tx-status-lo-val" class="tx-val">99.288 MHz</span></span
-          >
-          <span
-            ><strong>TX LO Offset:</strong>
-            <span id="tx-status-offset-val" class="tx-val">+50 kHz</span></span
-          >
-          <span
-            ><strong>TX Gain:</strong>
-            <span id="tx-status-gain-val" class="tx-val">-20.0 dB</span></span
           >
         </div>
       </div>
       <!-- Status Bar -->
       <div class="status-bar">
         <div class="status-row">
-          <span
-            ><strong>Zoom:</strong>
-            <span id="zoom-status" class="status-val">Hardware Adjusted</span></span
-          >
-          <span
-            ><strong>Visual Span:</strong>
-            <span id="visual-span-val" class="status-val">3.84 MHz</span></span
-          >
-          <span
-            ><strong>Hardware Span:</strong>
-            <span id="hardware-span-val" class="status-val">3.84 MHz</span></span
-          >
-          <span
-            ><strong>Zoom Stage:</strong>
-            <span id="resolution-val" class="status-val">-</span></span
-          >
+          <div class="status-group">
+            <span
+              ><strong>Hardware Span:</strong>
+              <span id="hardware-span-val" class="status-val">3.84 MHz</span></span
+            >
+            <span
+              ><strong>Visual Span:</strong>
+              <span id="visual-span-val" class="status-val">3.84 MHz</span></span
+            >
+          </div>
+          <div class="status-group">
+            <span
+              ><strong>Zoom:</strong>
+              <span id="zoom-status" class="status-val">Hardware Adjusted</span></span
+            >
+            <span
+              ><strong>Zoom Stage:</strong>
+              <span id="resolution-val" class="status-val">-</span></span
+            >
+          </div>
         </div>
         <div class="status-row">
           <span
             ><strong>LO Frequency:</strong>
             <span id="lo-freq-val" class="status-val">99.30 MHz</span></span
           >
-          <span
-            ><strong>Sampling Rate:</strong>
-            <span id="sample-rate-val" class="status-val">3.84 MSPS</span></span
-          >
-        </div>
-        <div class="status-row">
-          <span class="diag-label">Diag:</span>
-          <span
-            >Temp:
-            <span id="telemetry-temp" class="status-val strong">-- °C</span></span
-          >
-          <span id="telemetry-vccint-span"
-            >Vccint:
-            <span id="telemetry-vccint" class="status-val strong">-- V</span></span
-          >
-          <span id="telemetry-vccoddr-span"
-            >Vccoddr:
-            <span id="telemetry-vccoddr" class="status-val strong">-- V</span></span
-          >
+          <div class="diag-group">
+            <span class="diag-label">Diagnostics:</span>
+            <span
+              >Temp:
+              <span id="telemetry-temp" class="status-val strong">-- °C</span></span
+            >
+            <span id="telemetry-vccint-span"
+              >Vccint:
+              <span id="telemetry-vccint" class="status-val strong">-- V</span></span
+            >
+            <span id="telemetry-vccoddr-span"
+              >Vccoddr:
+              <span id="telemetry-vccoddr" class="status-val strong">-- V</span></span
+            >
+          </div>
         </div>
       </div>
     </div>

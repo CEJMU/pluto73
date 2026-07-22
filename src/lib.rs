@@ -10,7 +10,7 @@ pub use crate::threads::{audio, network, rx_io, tx_io};
 use crate::device::{GainMode, PlutoDevice};
 use crate::threads::tx_dsp::spawn_tx_dsp_thread;
 use audio::{AudioConfig, spawn_audio_thread, update_audio_tuning};
-use rx_io::{IoCommand, spawn_rx_io_thread};
+use rx_io::{IoCommand, RxHardwareState, spawn_rx_io_thread};
 use state::{ControlState, DemodMode};
 use tx_io::{TxIoCommand, spawn_tx_io_thread};
 
@@ -39,11 +39,29 @@ pub const MIN_SPAN_SSB: i64 = 768_000;
 pub const MIN_SPAN_FM: i64 = 3_840_000;
 // Maximum span supported by the AD9361 driver.
 pub const MAX_SPAN: i64 = 30_720_000;
+// Narrowest analog RX filter the AD9361 can realise, clamps to [200 kHz, 56 MHz]
+pub const MIN_RF_BANDWIDTH_HZ: i64 = 200_000;
 
 fn get_min_span(mode: DemodMode) -> i64 {
     match mode {
         DemodMode::FM => MIN_SPAN_FM,
         DemodMode::USB | DemodMode::LSB => MIN_SPAN_SSB,
+    }
+}
+
+/// Builds the operating-point message sent to clients. The three hardware values are readbacks
+/// supplied by the caller; the rest is derived from control state so every emitter agrees.
+fn config_message(
+    lo_hz: i64,
+    fs_hz: i64,
+    rf_bandwidth_hz: i64,
+    state: &ControlState,
+) -> network::ServerMessage {
+    network::ServerMessage::Config {
+        lo_hz,
+        sample_rate_hz: fs_hz,
+        min_span_hz: get_min_span(state.demod_mode),
+        rf_bandwidth_hz,
     }
 }
 
@@ -204,10 +222,10 @@ fn run_device_loop(
     device
         .set_antenna(initial_antenna)
         .map_err(|err| format!("Config error: {}", err))?;
-    device
+    let (initial_lo_readback, initial_fs_readback) = device
         .set_frequencies(initial_lo_hz, initial_fs_hz)
         .map_err(|err| format!("Config error: {}", err))?;
-    device
+    let initial_rf_bw_readback = device
         .set_rf_bandwidth(initial_bw_hz)
         .map_err(|err| format!("Config error: {}", err))?;
     device
@@ -222,8 +240,9 @@ fn run_device_loop(
     let mut last_waterfall_time = Instant::now();
     let mut waterfall_settle_until = Instant::now();
 
-    let mut current_lo_hz = initial_lo_hz;
-    let mut current_fs_hz = initial_fs_hz;
+    let mut current_lo_hz = initial_lo_readback;
+    let mut current_fs_hz = initial_fs_readback;
+    let mut current_rf_bw_hz = initial_rf_bw_readback;
     // In-flight hardware reconfigs awaiting confirmation from the RX IO thread.
     let mut pending_configs: usize = 0;
     let mut pending_dsp_reset: usize = 0;
@@ -252,8 +271,8 @@ fn run_device_loop(
     let (rx_iq_tx, rx_iq_rx) = std::sync::mpsc::sync_channel::<(Vec<i16>, Vec<i16>)>(128);
     // RX: config commands, main -> hardware.
     let (rx_io_cmd_tx, rx_io_cmd_rx) = std::sync::mpsc::channel::<IoCommand>();
-    // RX: confirmed LO/sample-rate, hardware -> main.
-    let (rx_actual_config_tx, rx_actual_config_rx) = std::sync::mpsc::channel::<(i64, i64)>();
+    // RX: confirmed LO/sample-rate/RF-bandwidth readbacks, hardware -> main.
+    let (rx_hardware_state_tx, rx_hardware_state_rx) = std::sync::mpsc::channel::<RxHardwareState>();
 
     // TX: modulated IQ, DSP -> hardware.
     let (tx_iq_tx, tx_iq_rx) = std::sync::mpsc::sync_channel::<(Vec<i16>, Vec<i16>)>(5);
@@ -309,7 +328,7 @@ fn run_device_loop(
         shutdown_io,
         is_running_io,
         rx_io_cmd_rx,
-        rx_actual_config_tx,
+        rx_hardware_state_tx,
         rx_iq_tx,
 
         tx_io_cmd_tx.clone(),
@@ -382,6 +401,7 @@ fn run_device_loop(
                 ControlCommand::SetRxSpan { center_hz, span_hz } => {
                     let requested_span = span_hz as i64;
                     state.visual_span_hz = requested_span;
+                    state.rf_bandwidth_hz = 0; // Zooming re-syncs RF bandwidth to the new span
 
                     let target_hardware_span = requested_span;
 
@@ -412,6 +432,7 @@ fn run_device_loop(
                     let _ = rx_io_cmd_tx.send(IoCommand::SetSpan {
                         center_hz: center_hz as i64,
                         span_hz: rounded_span,
+                        rf_bandwidth_hz: 0,
                     });
                 }
                 ControlCommand::SetRxAudioEnabled { enabled } => {
@@ -438,14 +459,16 @@ fn run_device_loop(
                         let _ = rx_io_cmd_tx.send(IoCommand::SetSpan {
                             center_hz: current_lo_hz,
                             span_hz: min_span,
+                            rf_bandwidth_hz: state.rf_bandwidth_hz,
                         });
                     }
 
-                    let _ = status_messages_tx.send(network::ServerMessage::Config {
-                        lo_hz: current_lo_hz,
-                        sample_rate_hz: current_fs_hz,
-                        min_span_hz: min_span,
-                    });
+                    let _ = status_messages_tx.send(config_message(
+                        current_lo_hz,
+                        current_fs_hz,
+                        current_rf_bw_hz,
+                        &state,
+                    ));
 
                     update_audio_tuning(
                         state.playback_hz,
@@ -518,8 +541,13 @@ fn run_device_loop(
                     let _ = rx_io_cmd_tx.send(IoCommand::SetTxGain(db));
                 }
                 ControlCommand::SetRxRfBandwidth { bw_hz } => {
-                    state.rf_bandwidth_hz = bw_hz;
-                    let _ = rx_io_cmd_tx.send(IoCommand::SetRfBandwidth(bw_hz));
+                    let target_bw = if bw_hz == 0 {
+                        0
+                    } else {
+                        bw_hz.max(MIN_RF_BANDWIDTH_HZ)
+                    };
+                    state.rf_bandwidth_hz = target_bw;
+                    let _ = rx_io_cmd_tx.send(IoCommand::SetRfBandwidth(target_bw));
                 }
                 ControlCommand::SetRxWaterfallScale { min_db, max_db } => {
                     fft.min_db = min_db;
@@ -540,12 +568,12 @@ fn run_device_loop(
                     }
                 }
                 ControlCommand::RequestSync => {
-                    let min_span = get_min_span(state.demod_mode);
-                    let _ = status_messages_tx.send(network::ServerMessage::Config {
-                        lo_hz: current_lo_hz,
-                        sample_rate_hz: current_fs_hz,
-                        min_span_hz: min_span,
-                    });
+                    let _ = status_messages_tx.send(config_message(
+                        current_lo_hz,
+                        current_fs_hz,
+                        current_rf_bw_hz,
+                        &state,
+                    ));
                     let _ = status_messages_tx.send(network::ServerMessage::Settings {
                         playback_hz: state.playback_hz,
                         demod_mode: state.demod_mode.to_string(),
@@ -554,7 +582,6 @@ fn run_device_loop(
                         waterfall_interval_ms: state.waterfall_interval_ms,
                         rx_gain_mode: state.rx_gain_mode.to_string(),
                         rx_gain_db: state.rx_gain_db,
-                        rf_bandwidth_hz: state.rf_bandwidth_hz,
                         tx_offset_hz: state.tx_offset_hz,
                         waterfall_min_db: fft.min_db,
                         waterfall_max_db: fft.max_db,
@@ -564,84 +591,103 @@ fn run_device_loop(
             }
         }
 
+        // Apply confirmed LO/sample-rate/bandwidth updates reported back by the RX IO thread.
+        while let Ok(hw_state) = rx_hardware_state_rx.try_recv() {
+            match hw_state {
+                RxHardwareState::BandwidthChanged { rf_bandwidth_hz } => {
+                    current_rf_bw_hz = rf_bandwidth_hz;
+                    let _ = status_messages_tx.send(config_message(
+                        current_lo_hz,
+                        current_fs_hz,
+                        current_rf_bw_hz,
+                        &state,
+                    ));
+                }
+                RxHardwareState::Retuned {
+                    lo_hz,
+                    fs_hz,
+                    rf_bandwidth_hz,
+                } => {
+                    current_rf_bw_hz = rf_bandwidth_hz;
+                    current_lo_hz = lo_hz;
+                    current_fs_hz = fs_hz;
+                    tx_fs_atomic.store(fs_hz as u32, Ordering::Relaxed);
+
+                    {
+                        let mut audio_cfg = audio_config.lock().unwrap();
+                        audio_cfg.fs_hz = fs_hz;
+                    }
+
+                    if pending_configs > 0 {
+                        pending_configs -= 1;
+                    }
+                    if pending_dsp_reset > 0 {
+                        pending_dsp_reset -= 1;
+                    }
+
+                    // Clamp tx lo offset and push the update to the IO threads.
+                    let offset_limit = max_tx_offset(current_fs_hz);
+                    if state.tx_offset_hz.abs() > offset_limit {
+                        state.tx_offset_hz = state.tx_offset_hz.clamp(-offset_limit, offset_limit);
+                        let _ = rx_io_cmd_tx.send(IoCommand::SetTxOffset {
+                            offset_hz: state.tx_offset_hz,
+                            playback_hz: state.playback_hz,
+                        });
+                    }
+
+                    let _ = status_messages_tx.send(config_message(
+                        current_lo_hz,
+                        current_fs_hz,
+                        current_rf_bw_hz,
+                        &state,
+                    ));
+
+                    // Flush stale buffers so we don't display old frequencies.
+                    while let Ok(_) = rx_iq_rx.try_recv() {}
+
+                    if pending_configs == 0 && pending_dsp_reset == 0 {
+                        // Hold off waterfall output for a short window so only clean rows go out
+                        waterfall_settle_until =
+                            Instant::now() + Duration::from_millis(WATERFALL_SETTLE_MS);
+
+                        let mut sys = system.lock().unwrap();
+                        // Re-apply DSP config for the new rate, keeping the stored antenna.
+                        let rx_antenna = sys.rx_antenna;
+                        sys.rx_apply_dsp_config(rx_antenna, current_fs_hz);
+                        // Round to what the FPGA DUC is actually clocked at.
+                        let rounded_tx_fs = (current_fs_hz as f64 / 192000.0).round() * 192000.0;
+                        tx_fs_atomic.store(rounded_tx_fs as u32, Ordering::Relaxed);
+                        let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
+                            lo_hz: state.playback_hz - state.tx_offset_hz,
+                            fs_hz: current_fs_hz,
+                        });
+                        sys.reset_audio_dma_controller();
+                        sys.is_configuring = false;
+
+                        let mut audio_cfg = audio_config.lock().unwrap();
+                        audio_cfg.is_configuring = false;
+                    }
+
+                    if pending_configs == 0 {
+                        update_audio_tuning(
+                            state.playback_hz,
+                            current_lo_hz,
+                            current_fs_hz,
+                            state.demod_mode,
+                            state.filter_bw,
+                            &system,
+                            &audio_config,
+                        );
+                    }
+                }
+            }
+        }
+
         // While stopped: recycle stale RX buffers (unblocking the IO thread) and idle.
         if !state.is_running {
             thread::sleep(Duration::from_millis(100));
             while let Ok(_) = rx_iq_rx.try_recv() {}
             continue;
-        }
-
-        // Apply confirmed LO/sample-rate updates reported back by the RX IO thread.
-        while let Ok((actual_lo, actual_fs)) = rx_actual_config_rx.try_recv() {
-            current_lo_hz = actual_lo;
-            current_fs_hz = actual_fs;
-            tx_fs_atomic.store(actual_fs as u32, Ordering::Relaxed);
-
-            {
-                let mut cfg = audio_config.lock().unwrap();
-                cfg.fs_hz = actual_fs;
-            }
-
-            if pending_configs > 0 {
-                pending_configs -= 1;
-            }
-            if pending_dsp_reset > 0 {
-                pending_dsp_reset -= 1;
-            }
-
-            // Clamp tx lo offset and push the update to the IO threads.
-            let offset_limit = max_tx_offset(current_fs_hz);
-            if state.tx_offset_hz.abs() > offset_limit {
-                state.tx_offset_hz = state.tx_offset_hz.clamp(-offset_limit, offset_limit);
-                let _ = rx_io_cmd_tx.send(IoCommand::SetTxOffset {
-                    offset_hz: state.tx_offset_hz,
-                    playback_hz: state.playback_hz,
-                });
-            }
-
-            let min_span = get_min_span(state.demod_mode);
-            let _ = status_messages_tx.send(network::ServerMessage::Config {
-                lo_hz: actual_lo,
-                sample_rate_hz: actual_fs,
-                min_span_hz: min_span,
-            });
-
-            // Flush stale buffers so we don't display old frequencies.
-            while let Ok(_) = rx_iq_rx.try_recv() {}
-
-            if pending_configs == 0 && pending_dsp_reset == 0 {
-                // Hold off waterfall output for a short window so only clean rows go out
-                waterfall_settle_until = Instant::now() + Duration::from_millis(WATERFALL_SETTLE_MS);
-
-                let mut sys = system.lock().unwrap();
-                // Re-apply DSP config for the new rate, keeping the stored antenna.
-                let rx_antenna = sys.rx_antenna;
-                sys.rx_apply_dsp_config(rx_antenna, actual_fs);
-                // Round to what the FPGA DUC is actually clocked at.
-                let rounded_tx_fs = (current_fs_hz as f64 / 192000.0).round() * 192000.0;
-                tx_fs_atomic.store(rounded_tx_fs as u32, Ordering::Relaxed);
-                let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
-                    lo_hz: state.playback_hz - state.tx_offset_hz,
-                    fs_hz: current_fs_hz,
-                });
-                sys.reset_audio_dma_controller();
-                sys.is_configuring = false;
-
-                let mut cfg = audio_config.lock().unwrap();
-                cfg.is_configuring = false;
-            }
-
-            if pending_configs == 0 {
-                update_audio_tuning(
-                    state.playback_hz,
-                    current_lo_hz,
-                    current_fs_hz,
-                    state.demod_mode,
-                    state.filter_bw,
-                    &system,
-                    &audio_config,
-                );
-            }
         }
 
         // Waterfall: once per interval, trigger a burst and emit one FFT row.

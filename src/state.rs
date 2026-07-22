@@ -71,7 +71,7 @@ impl ControlState {
             visual_span_hz: crate::MIN_SPAN_FM,
             rx_gain_mode: GainMode::AgcSlow,
             rx_gain_db: 30.0,
-            rf_bandwidth_hz: crate::MIN_SPAN_FM,
+            rf_bandwidth_hz: 0,
             tx_offset_hz: 50_000,
             iq_stream_enabled: false,
         }

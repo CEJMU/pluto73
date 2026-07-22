@@ -99,8 +99,16 @@ input[type="number"] {
   width: 100%;
   border: 1px solid #3c3c3c;
   border-radius: 6px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
   overflow: hidden;
   background-color: #000;
+}
+
+.wf-scale-toolbar {
+  margin-top: -16px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 canvas {
@@ -128,12 +136,13 @@ canvas {
     vertical-align: middle;
 }
 
-.status-bar {
+.status-bar,
+.tx-status-bar {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
   background-color: #2d2d2d;
-  padding: 8px 15px;
+  padding: 10px 15px;
   border-radius: 6px;
   border: 1px solid #3c3c3c;
   font-size: 13px;
@@ -142,16 +151,10 @@ canvas {
 }
 
 .tx-status-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   background-color: #242424;
-  padding: 8px 15px;
-  border-radius: 6px;
-  border: 1px solid #3c3c3c;
-  font-size: 13px;
-  color: #aaa;
-  margin-top: 5px;
+  margin-top: -16px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 /* --- Utilities --- */
@@ -177,6 +180,11 @@ canvas {
 
 .mb-20 {
   margin-bottom: 20px;
+}
+
+/* Pulls a row up against the one above it, tightening the container's 15px gap */
+.mt-n8 {
+  margin-top: -8px;
 }
 
 .strong {
@@ -225,12 +233,38 @@ canvas {
   user-select: none;
 }
 
+/* --- RX Listening controls block --- */
+.rx-controls {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.rx-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.rx-row-footer {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 15px;
+  border-top: 1px solid #3c3c3c;
+  padding-top: 8px;
+}
+
 /* --- Transmit controls block --- */
 .tx-controls {
   flex-direction: column;
   align-items: stretch;
   gap: 12px;
   margin-top: 20px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .tx-row {
@@ -304,6 +338,23 @@ canvas {
 /* --- Status bars --- */
 .status-row {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.status-row > span,
+.status-group > span,
+.diag-group > span {
+  white-space: nowrap;
+}
+
+.status-group,
+.diag-group {
+  display: flex;
+  align-items: center;
   gap: 15px;
   flex-wrap: wrap;
 }

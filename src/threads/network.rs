@@ -40,11 +40,12 @@ pub enum ServerMessage {
     Status {
         state: String,
     },
-    /// Reports the actual hardware operating point after a (re)tune.
+    /// Reports the actual hardware operating point after a (re)tune. Every field is a device readback
     Config {
         lo_hz: i64,
         sample_rate_hz: i64,
         min_span_hz: i64,
+        rf_bandwidth_hz: i64,
     },
     Telemetry {
         temp_c: f32,
@@ -59,7 +60,6 @@ pub enum ServerMessage {
         waterfall_interval_ms: u64,
         rx_gain_mode: String,
         rx_gain_db: f64,
-        rf_bandwidth_hz: i64,
         tx_offset_hz: i64,
         waterfall_min_db: f32,
         waterfall_max_db: f32,
