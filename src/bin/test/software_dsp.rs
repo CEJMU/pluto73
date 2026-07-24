@@ -1,5 +1,5 @@
-use pluto::dsp::{AudioProcessor, Demodulation, FilterAudio};
 use crate::test::dsp_helpers::{fft_mags_f32, fft_mags_i16, write_wav_f32_mono};
+use pluto::dsp::{AudioProcessor, Demodulation, FilterAudio};
 use pluto::tx_dsp::{TxMode, TxModulator};
 use std::f32::consts::PI;
 
@@ -11,7 +11,7 @@ pub fn run_soft_ssb_loopback(output_path: &str) -> Result<(), Box<dyn std::error
     println!("Pure software: modulate -> simulate FPGA -> demodulate -> WAV");
     println!("No hardware involved.\n");
 
-    let audio_fs = 48_000.0f32;
+    let audio_fs = pluto::AUDIO_SAMPLE_RATE as f32;
     let filter_bw = 3_000.0f32;
 
     // --- Generate test audio (500 Hz + 1500 Hz) ---

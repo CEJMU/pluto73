@@ -27,7 +27,10 @@ fn main() {
         }
         std::process::exit(0);
     }
-    if let Some(pos) = args.iter().position(|arg| arg == "--test-rf-audio-loopback") {
+    if let Some(pos) = args
+        .iter()
+        .position(|arg| arg == "--test-rf-audio-loopback")
+    {
         let input = args.get(pos + 1).unwrap_or_else(|| {
             eprintln!("Usage: --test-rf-audio-loopback <input.wav> <output.wav>");
             std::process::exit(1);
@@ -87,9 +90,9 @@ fn main() {
             .get(pos + 5)
             .and_then(|s| s.parse().ok())
             .unwrap_or(3_840_000);
-        if let Err(err) = test::rf_loopback::run_rf_tone_loopback(
-            freq_hz, duration_s, output, chunk_size, fs_hz,
-        ) {
+        if let Err(err) =
+            test::rf_loopback::run_rf_tone_loopback(freq_hz, duration_s, output, chunk_size, fs_hz)
+        {
             eprintln!("RF tone loopback test failed: {}", err);
         }
         std::process::exit(0);
@@ -130,7 +133,10 @@ fn main() {
         }
         std::process::exit(0);
     }
-    if let Some(pos) = args.iter().position(|arg| arg == "--test-narrowband-loopback") {
+    if let Some(pos) = args
+        .iter()
+        .position(|arg| arg == "--test-narrowband-loopback")
+    {
         let rate_hz: i64 = args
             .get(pos + 1)
             .and_then(|s| s.parse().ok())
@@ -145,21 +151,27 @@ fn main() {
         std::process::exit(0);
     }
 
-
     // --- Live Broadcast Quality Metrics ---
-    if let Some(pos) = args.iter().position(|arg| arg == "--test-fm-broadcast-quality") {
+    if let Some(pos) = args
+        .iter()
+        .position(|arg| arg == "--test-fm-broadcast-quality")
+    {
         let station_hz: i64 = args
             .get(pos + 1)
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(|| {
-                eprintln!("Usage: --test-fm-broadcast-quality <station_hz> <duration_s> [out_prefix]");
+                eprintln!(
+                    "Usage: --test-fm-broadcast-quality <station_hz> <duration_s> [out_prefix]"
+                );
                 std::process::exit(1);
             });
         let duration_s: f32 = args
             .get(pos + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(|| {
-                eprintln!("Usage: --test-fm-broadcast-quality <station_hz> <duration_s> [out_prefix]");
+                eprintln!(
+                    "Usage: --test-fm-broadcast-quality <station_hz> <duration_s> [out_prefix]"
+                );
                 std::process::exit(1);
             });
         let out_prefix = args.get(pos + 3).map(|s| s.as_str());
@@ -213,9 +225,11 @@ fn main() {
         std::process::exit(0);
     }
 
-
     // --- Pure Software DSP Verification ---
-    if let Some(pos) = args.iter().position(|arg| arg == "--test-soft-ssb-loopback") {
+    if let Some(pos) = args
+        .iter()
+        .position(|arg| arg == "--test-soft-ssb-loopback")
+    {
         let output = args.get(pos + 1).unwrap_or_else(|| {
             eprintln!("Usage: --test-soft-ssb-loopback <output.wav>");
             std::process::exit(1);
@@ -234,5 +248,4 @@ fn main() {
         }
         std::process::exit(0);
     }
-
 }

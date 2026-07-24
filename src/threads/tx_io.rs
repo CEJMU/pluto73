@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::MIN_TX_GAIN_DB;
 use crate::device::{PlutoSystem, PlutoTxDevice};
 
 /// Operational commands sent from the receiver control logic to manage the transmitter thread state.
@@ -42,7 +43,7 @@ pub fn spawn_tx_io_thread(
         let mut desired_gain = tx_device.gain;
 
         // Mute TX at startup (-89.75 dB) to prevent DC spike/noise leakage while inactive.
-        if let Err(err) = tx_device.set_gain(-89.75) {
+        if let Err(err) = tx_device.set_gain(MIN_TX_GAIN_DB) {
             error!("[TX IO Error] Failed to mute TX on startup: {}", err);
         }
 
@@ -53,7 +54,7 @@ pub fn spawn_tx_io_thread(
                 match cmd {
                     TxIoCommand::ConfigureStart => {
                         is_configuring = true;
-                        let _ = tx_device.set_gain(-89.75);
+                        let _ = tx_device.set_gain(MIN_TX_GAIN_DB);
                         tx_device.release_channels();
                     }
                     TxIoCommand::ConfigureEnd => {
@@ -85,7 +86,7 @@ pub fn spawn_tx_io_thread(
                     TxIoCommand::TxStop => {
                         debug!("[TX IO Debug] Command: TxStop. Releasing TX channels.");
                         is_tx_active = false;
-                        if let Err(err) = tx_device.set_gain(-89.75) {
+                        if let Err(err) = tx_device.set_gain(MIN_TX_GAIN_DB) {
                             error!("[TX IO Error] Failed to mute TX on stop: {}", err);
                         }
                         tx_device.release_channels();
@@ -106,7 +107,7 @@ pub fn spawn_tx_io_thread(
                                 );
                             }
                         } else {
-                            let _ = tx_device.set_gain(-89.75);
+                            let _ = tx_device.set_gain(MIN_TX_GAIN_DB);
                         }
                     }
                     TxIoCommand::SetTxGain(db) => {
@@ -190,6 +191,6 @@ pub fn spawn_tx_io_thread(
         // --- Shutdown ---
         // Mute TX to prevent leakage after exit.
         debug!("[TX IO Debug] Thread shutting down. Muting TX hardware.");
-        let _ = tx_device.set_gain(-89.75);
+        let _ = tx_device.set_gain(MIN_TX_GAIN_DB);
     })
 }

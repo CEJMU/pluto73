@@ -1,22 +1,19 @@
+use crate::test::dsp_helpers::{
+    AUDIO_SAMPLE_RATE, LoopbackGuard, apply_hamming_window, dominant_tone, hamming_window,
+    with_ad9361_loopback, write_wav_f32_mono,
+};
+use num_complex::Complex;
 use pluto::device::{
     GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, PlutoRxDevice, PlutoSystem, PlutoTxDevice,
+    rx_cic_decimation_for_rate, wait_for_uio_interrupt,
 };
 use pluto::dsp::{AudioProcessor, Demodulation, FilterAudio};
-use crate::test::dsp_helpers::{
-    apply_hamming_window, dominant_tone, hamming_window, with_ad9361_loopback, LoopbackGuard,
-    write_wav_f32_mono,
-};
 use pluto::tx_dsp::{IqResampler, TxMode, TxModulator, tx_dma_audio_fs};
-use num_complex::Complex;
 use rustfft::FftPlanner;
-use std::io::Read;
-use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-
-const AUDIO_SAMPLE_RATE: u32 = 48_000;
 
 /// One point in the parameter sweep.
 #[derive(Clone, Copy)]
@@ -162,12 +159,15 @@ pub fn run_spec_tx_shape(loopback: bool) -> Result<(), Box<dyn std::error::Error
     let offset_hz = 50_000.0f64;
     let tones: Vec<f32> = vec![300.0, 600.0, 1000.0, 1500.0, 2000.0, 2500.0, 2900.0];
 
-    let _loopback = loopback
-        .then(|| LoopbackGuard::enable("--loopback requested but AD9361 loopback unavailable; capturing over RF"));
+    let _loopback = loopback.then(|| {
+        LoopbackGuard::enable(
+            "--loopback requested but AD9361 loopback unavailable; capturing over RF",
+        )
+    });
 
     for &fs_hz in &[3_840_000i64, 7_680_000i64] {
         println!("--- fs = {:.2} MHz ---", fs_hz as f64 / 1e6);
-        let cic_decimation: u32 = ((fs_hz / 960_000).clamp(4, 32) as u32).next_power_of_two();
+        let cic_decimation: u32 = rx_cic_decimation_for_rate(fs_hz);
         {
             let mut sys = system.lock().unwrap();
             sys.rx_apply_dsp_config(antenna, fs_hz);
@@ -249,6 +249,8 @@ pub fn run_spec_tx_wideband(loopback: bool) -> Result<(), Box<dyn std::error::Er
     system.rx_apply_dsp_config(antenna, fs_hz);
     system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
     system.reset_audio_dma_controller();
+    // analyze_wideband below probes fixed 49/50/51 kHz bins that assume exactly +50 kHz.
+    system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
 
     rx.set_antenna(antenna)?;
     rx.set_frequencies(lo_hz, fs_hz)?;
@@ -261,8 +263,11 @@ pub fn run_spec_tx_wideband(loopback: bool) -> Result<(), Box<dyn std::error::Er
     tx.set_rf_bandwidth(fs_hz)?;
     tx.init_channels()?;
 
-    let _loopback = loopback
-        .then(|| LoopbackGuard::enable("--loopback requested but AD9361 loopback unavailable; capturing over RF"));
+    let _loopback = loopback.then(|| {
+        LoopbackGuard::enable(
+            "--loopback requested but AD9361 loopback unavailable; capturing over RF",
+        )
+    });
 
     let n = 16384usize;
     let mut planner = FftPlanner::<f32>::new();
@@ -568,18 +573,9 @@ fn capture_tx_iq(
                 let mut sys = system_rx.lock().unwrap();
                 sys.ensure_dma_running();
             }
-            let raw_fd = uio_file.as_raw_fd();
-            let mut fds = [libc::pollfd {
-                fd: raw_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            }];
-            if unsafe { libc::poll(fds.as_mut_ptr(), 1, 100) } <= 0 {
-                continue;
-            }
-            let mut int_info = [0u8; 4];
-            if uio_file.read_exact(&mut int_info).is_err() {
-                continue;
+            match wait_for_uio_interrupt(&mut uio_file, 100) {
+                Ok(Some(_)) => {}
+                _ => continue,
             }
             let n = {
                 let mut sys = system_rx.lock().unwrap();
@@ -661,7 +657,7 @@ fn run_combo(
     let offset_hz = combo.offset_hz;
 
     // RX audio CIC scales with fs so the audio-DMA rate stays ~240 kHz at any span.
-    let cic_decimation: u32 = ((fs_hz / 960_000).clamp(4, 32) as u32).next_power_of_two();
+    let cic_decimation: u32 = rx_cic_decimation_for_rate(fs_hz);
 
     // Configure FPGA DSP + tune TX and RX DDS to the same offset
     {
@@ -722,24 +718,16 @@ fn run_combo(
                 let mut sys = system_rx.lock().unwrap();
                 sys.ensure_dma_running();
             }
-            let raw_fd = uio_file.as_raw_fd();
-            let mut fds = [libc::pollfd {
-                fd: raw_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            }];
-            let poll_ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 100) };
-            if poll_ret <= 0 {
-                if last_packet.elapsed().as_secs() > 3 {
-                    let mut sys = system_rx.lock().unwrap();
-                    sys.reset_audio_dma_controller();
-                    last_packet = Instant::now();
+            match wait_for_uio_interrupt(&mut uio_file, 100) {
+                Ok(Some(_)) => {}
+                _ => {
+                    if last_packet.elapsed().as_secs() > 3 {
+                        let mut sys = system_rx.lock().unwrap();
+                        sys.reset_audio_dma_controller();
+                        last_packet = Instant::now();
+                    }
+                    continue;
                 }
-                continue;
-            }
-            let mut int_info = [0u8; 4];
-            if uio_file.read_exact(&mut int_info).is_err() {
-                continue;
             }
             let total_read = {
                 let mut sys = system_rx.lock().unwrap();
@@ -791,7 +779,6 @@ fn transmit(
     let mut resampler = IqResampler::for_dma_fs(dma_audio_fs);
 
     let chunk_size = 4096usize;
-    let secs_per_chunk = chunk_size as f64 / AUDIO_SAMPLE_RATE as f64;
     let prefill_chunks = 2usize;
     let silence = vec![0.0f32; chunk_size];
 
@@ -820,8 +807,8 @@ fn transmit(
         all_chunks.push(silence.clone());
     }
 
-    let tx_start = Instant::now();
-    for (idx, chunk) in all_chunks.iter().enumerate() {
+    let _tx_start = Instant::now();
+    for chunk in all_chunks.iter() {
         let mut mod_i = Vec::new();
         let mut mod_q = Vec::new();
         modulator.process_chunk(chunk, &mut mod_i, &mut mod_q);
@@ -866,6 +853,8 @@ pub fn run_spur_probe(fs_hz: i64) -> Result<(), Box<dyn std::error::Error>> {
     system.rx_apply_dsp_config(antenna, fs_hz);
     system.tx_apply_dsp_config(antenna, fs_hz as f64);
     system.reset_audio_dma_controller();
+    // (DEFAULT_TX_OFFSET_HZ); cases below assume exactly +50 kHz per its own "DDS +50 kHz" label and the fixed capture/analysis convention.
+    system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
 
     rx.set_antenna(antenna)?;
     rx.set_frequencies(lo_hz, fs_hz)?;
@@ -878,10 +867,8 @@ pub fn run_spur_probe(fs_hz: i64) -> Result<(), Box<dyn std::error::Error>> {
     tx.set_rf_bandwidth(fs_hz)?;
     tx.init_channels()?;
 
-    // Bypass the burst gate: bit 2 = 0 -> ADC streams to the wideband DMA continuously.
-    let cic_decimation: u32 = ((fs_hz / 960_000).clamp(4, 32) as u32).next_power_of_two();
-    let ungated = 0x01 | (cic_decimation << 4) | ((antenna as u32) << 13);
-    system.write_gpio_rx(0x00, ungated);
+    // Bypass the burst gate: the ADC then streams to the wideband DMA continuously.
+    system.set_rx_burst_gate_enabled(false);
 
     let mut modulator = TxModulator::new(TxMode::USB, 3_000.0, fs_hz as f32);
     let dma_audio_fs = tx_dma_audio_fs(fs_hz as f32);
@@ -958,25 +945,70 @@ pub fn run_spur_probe(fs_hz: i64) -> Result<(), Box<dyn std::error::Error>> {
 
     tx.set_gain(0.0)?;
     println!("case a: DDS +50 kHz, full drive (tone at LO+51 kHz)");
-    capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, true, 1000.0, "/root/spur_a.bin")?;
+    capture_block(
+        &mut rx,
+        &mut tx,
+        &mut modulator,
+        &mut resampler,
+        &mut t,
+        true,
+        1000.0,
+        "/root/spur_a.bin",
+    )?;
 
     system.tx_set_dds(37_000.0, (fs_hz * 2) as f64);
     println!("case b: DDS +37 kHz, full drive (tone at LO+38 kHz)");
-    capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, true, 1000.0, "/root/spur_b.bin")?;
+    capture_block(
+        &mut rx,
+        &mut tx,
+        &mut modulator,
+        &mut resampler,
+        &mut t,
+        true,
+        1000.0,
+        "/root/spur_b.bin",
+    )?;
 
     system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
     tx.set_gain(-20.0)?;
     println!("case c: DDS +50 kHz, -20 dB drive");
-    capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, true, 1000.0, "/root/spur_c.bin")?;
+    capture_block(
+        &mut rx,
+        &mut tx,
+        &mut modulator,
+        &mut resampler,
+        &mut t,
+        true,
+        1000.0,
+        "/root/spur_c.bin",
+    )?;
 
     tx.set_gain(-89.75)?;
     println!("case d: TX muted (RX-side floor)");
-    capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, false, 1000.0, "/root/spur_d.bin")?;
+    capture_block(
+        &mut rx,
+        &mut tx,
+        &mut modulator,
+        &mut resampler,
+        &mut t,
+        false,
+        1000.0,
+        "/root/spur_d.bin",
+    )?;
 
     tx.set_gain(0.0)?;
     with_ad9361_loopback("case e SKIPPED: cannot set AD9361 loopback", || {
         println!("case e: AD9361 digital loopback (BIST), DDS +50 kHz, full drive");
-        capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, true, 1000.0, "/root/spur_e.bin")
+        capture_block(
+            &mut rx,
+            &mut tx,
+            &mut modulator,
+            &mut resampler,
+            &mut t,
+            true,
+            1000.0,
+            "/root/spur_e.bin",
+        )
     })?;
 
     /// Pushes `chunks` x 4096 samples of constant DC I/Q (bypasses modulator + resampler math).
@@ -1022,23 +1054,58 @@ pub fn run_spur_probe(fs_hz: i64) -> Result<(), Box<dyn std::error::Error>> {
 
     with_ad9361_loopback("cases h/i SKIPPED: cannot set AD9361 loopback", || {
         println!("case h: 2 kHz audio tone, AD9361 digital loopback (PM-depth-vs-f_audio scaling)");
-        capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, true, 2000.0, "/root/spur_h.bin")?;
+        capture_block(
+            &mut rx,
+            &mut tx,
+            &mut modulator,
+            &mut resampler,
+            &mut t,
+            true,
+            2000.0,
+            "/root/spur_h.bin",
+        )?;
         println!("case i: 500 Hz audio tone, AD9361 digital loopback");
-        capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, true, 500.0, "/root/spur_i.bin")
+        capture_block(
+            &mut rx,
+            &mut tx,
+            &mut modulator,
+            &mut resampler,
+            &mut t,
+            true,
+            500.0,
+            "/root/spur_i.bin",
+        )
     })?;
 
     with_ad9361_loopback("case j SKIPPED: cannot set AD9361 loopback", || {
         println!("case j: DSP BYPASS mode (enabled=0), AD9361 digital loopback, 1 kHz tone");
         system.set_tx_dsp_enabled(false);
-        let result =
-            capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, true, 1000.0, "/root/spur_j.bin");
+        let result = capture_block(
+            &mut rx,
+            &mut tx,
+            &mut modulator,
+            &mut resampler,
+            &mut t,
+            true,
+            1000.0,
+            "/root/spur_j.bin",
+        );
         system.set_tx_dsp_enabled(true);
         result
     })?;
 
     println!("case k: DSP BYPASS mode (enabled=0), RF loopback path, 1 kHz tone");
     system.set_tx_dsp_enabled(false);
-    capture_block(&mut rx, &mut tx, &mut modulator, &mut resampler, &mut t, true, 1000.0, "/root/spur_k.bin")?;
+    capture_block(
+        &mut rx,
+        &mut tx,
+        &mut modulator,
+        &mut resampler,
+        &mut t,
+        true,
+        1000.0,
+        "/root/spur_k.bin",
+    )?;
     system.set_tx_dsp_enabled(true);
 
     println!("\n=== SPUR PROBE COMPLETE ===");

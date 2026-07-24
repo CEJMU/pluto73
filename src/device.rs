@@ -1,11 +1,10 @@
-#![allow(dead_code)]
-
 use log::{debug, warn};
 use memmap2::MmapOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::ptr::{read_volatile, write_volatile};
+use std::time::Instant;
 use std::{fs::OpenOptions, thread, time::Duration};
 
 use industrial_io as iio;
@@ -308,7 +307,7 @@ fn assert_shared_sample_rate(dev_phy: &iio::Device, ch_name: &str) {
 impl PlutoRxDevice {
     /// Sets the local oscillator center frequency and baseband sampling frequency for the receiver.
     /// Returns the active center frequency and sampling frequency configured by the hardware.
-    /// 
+    ///
     /// Note: the AD9361 on this board exposes only one baseband sample rate, shared by RX and TX.
     /// Setting it here also moves `PlutoTxDevice`'s rate.
     pub fn set_frequencies(
@@ -606,7 +605,6 @@ impl PlutoRxDevice {
         Ok((i_samples, q_samples))
     }
 
-
     /// Reads internal device telemetry sensors (processor temperature, internal logic voltage VCCINT,
     /// and memory voltage VCCODDR) via the XADC interface.
     pub fn read_telemetry(&self) -> Result<(f32, f32, f32), Box<dyn std::error::Error>> {
@@ -651,28 +649,6 @@ impl PlutoRxDevice {
 }
 
 impl PlutoTxDevice {
-    /// Sets the transmitter's local oscillator center frequency. Returns the active LO frequency
-    /// configured by the hardware.
-    pub fn set_lo_frequency(&mut self, frequency: i64) -> Result<i64, Box<dyn std::error::Error>> {
-        let ch_lo = self
-            .dev_phy
-            .find_output_channel("altvoltage1")
-            .ok_or("Channel altvoltage1 not found")?;
-        ch_lo.attr_write_int("frequency", frequency)?;
-        let dev_frequency = ch_lo.attr_read_int("frequency")?;
-        self.frequency = dev_frequency;
-
-        let ch_name = format!("voltage{}", self.antenna);
-        if let Some(ch_out) = self.dev_phy.find_output_channel(&ch_name) {
-            if let Ok(dev_sampling_frequency) = ch_out.attr_read_int("sampling_frequency") {
-                self.sampling_frequency = dev_sampling_frequency;
-            }
-        }
-        assert_shared_sample_rate(&self.dev_phy, &ch_name);
-
-        Ok(dev_frequency)
-    }
-
     /// Sets the local oscillator center frequency and baseband sampling frequency for the
     /// transmitter. Returns the active center frequency and sampling frequency configured by the
     /// hardware.
@@ -784,6 +760,8 @@ impl PlutoTxDevice {
         }
         self.ch_i = None;
         self.ch_q = None;
+        self.acc_i.clear();
+        self.acc_q.clear();
     }
 
     /// Buffers raw I/Q samples into an internal accumulator. Once `buffer_size` samples are
@@ -797,9 +775,9 @@ impl PlutoTxDevice {
         let ch_i = self.ch_i.as_ref().ok_or("TX I channel not initialized")?;
         let ch_q = self.ch_q.as_ref().ok_or("TX Q channel not initialized")?;
 
-        while !i_samples.is_empty() {
+        while !i_samples.is_empty() && !q_samples.is_empty() {
             let needed = self.buffer_size - self.acc_i.len();
-            let take = std::cmp::min(needed, i_samples.len());
+            let take = std::cmp::min(needed, i_samples.len()).min(q_samples.len());
 
             self.acc_i.extend_from_slice(&i_samples[..take]);
             self.acc_q.extend_from_slice(&q_samples[..take]);
@@ -918,9 +896,17 @@ impl PlutoSystem {
         // Bit 3: tx_cic_config_valid is pulsed on offset 0x00 by `tx_apply_dsp_config`, defaults to 0 here
         // Bits [11:4]: CIC interpolation rate
         // Bits [27:12]: tx_strobe_gen phase increment
+        //
+        // The fabric (`dsp_mux_tx`) computes `4 * cic_interp - 1` from bits [11:4]; a value of 0
+        // wraps that threshold to 0xFFF and starves the TX feed strobe, so never present less
+        // than the hardware CIC's minimum rate of 4 to the fabric.
+        debug_assert!(
+            self.tx_cic_interpolation >= 4,
+            "tx_cic_interpolation must be >= 4 (the CIC minimum) before any GPIO write"
+        );
         (self.tx_dsp_enabled as u32)
             | ((self.tx_antenna as u32) << 1)
-            | (self.tx_cic_interpolation << 4)
+            | (self.tx_cic_interpolation.max(4) << 4)
             | (self.tx_phase_inc << 12)
     }
 
@@ -1042,11 +1028,6 @@ impl PlutoSystem {
 
     /// Queues initial ping-pong DMA transfer descriptors if the DMA engine is currently stopped.
     pub fn ensure_dma_running(&mut self) {
-        if self.is_configuring {
-            self.dma_running = false;
-            return;
-        }
-
         let max_bytes: u32 = (MAX_AUDIO_SAMPLES * 4) as u32;
         let current_offset = if self.ping_pong { max_bytes } else { 0 };
         let next_offset = if !self.ping_pong { max_bytes } else { 0 };
@@ -1054,11 +1035,12 @@ impl PlutoSystem {
         if !self.dma_running {
             self.write_dma(DMA_REG_IRQ_PENDING, 0xFFFFFFFF);
 
-            // Queue Transfer 1
-            self.submit_dma_transfer(current_offset, max_bytes);
-
-            // Queue Transfer 2
-            self.submit_dma_transfer(next_offset, max_bytes);
+            // Queue both ping-pong transfers; leave the DMA stopped if the DMAC won't accept them.
+            if !self.submit_dma_transfer(current_offset, max_bytes)
+                || !self.submit_dma_transfer(next_offset, max_bytes)
+            {
+                return;
+            }
 
             let _ = self.uio_file.write_all(&1u32.to_ne_bytes());
             self.dma_running = true;
@@ -1067,38 +1049,36 @@ impl PlutoSystem {
 
     /// Reads memory-mapped ADC samples from the current page of the DMA buffer, unpacks them into
     /// separate I/Q vectors, and queues a new transfer request to keep the DMA pipeline full.
+    ///
+    /// WARNING: This is a blocking convenience wrapper intended ONLY for single-threaded scripts
+    /// In a multi-threaded context (like the main application), calling  this function while
+    /// holding a `Mutex` lock on `PlutoSystem` will cause severe lock contention.
+    /// Instead, audio threads should call `prepare_audio_dma_read()` to acquire the raw
+    /// pointer, immediately drop the lock, and perform the `unsafe` copy and `unpack_iq_words()`
+    /// entirely outside of the critical section.
     pub fn read_audio_dma_samples(
         &mut self,
         i_buf: &mut Vec<i16>,
         q_buf: &mut Vec<i16>,
     ) -> Option<usize> {
-        if self.is_configuring || !self.dma_running {
-            return None;
+        let (count, ram_ptr) = self.prepare_audio_dma_read()?;
+        let mut words = vec![0u32; count];
+        // SAFETY: ram_ptr points at `count` packed u32 samples inside the mmapped DMA buffer
+        // (see prepare_audio_dma_read); `words` was just allocated with that length.
+        unsafe {
+            std::ptr::copy_nonoverlapping(ram_ptr, words.as_mut_ptr(), count);
         }
-
-        let max_bytes: u32 = (MAX_AUDIO_SAMPLES * 4) as u32;
-        let current_offset = if self.ping_pong { max_bytes } else { 0 };
-
-        // Clear DMA Interrupt unconditionally
-        self.write_dma(DMA_REG_IRQ_PENDING, 0xFFFFFFFF);
-
-        // Queue the next transfer into current_offset (the buffer we just finished) BEFORE reading
-        // it, to keep the 2-deep hardware queue full and never underrun
-        self.submit_dma_transfer(current_offset, max_bytes);
-
-        let _ = self.uio_file.write_all(&1u32.to_ne_bytes());
-
-        // Read from the current buffer (see ordering note above).
-        self.copy_and_unpack_samples(current_offset as usize, MAX_AUDIO_SAMPLES, i_buf, q_buf);
-
-        self.ping_pong = !self.ping_pong;
-        Some(MAX_AUDIO_SAMPLES)
+        unpack_iq_words(&words, i_buf, q_buf);
+        Some(count)
     }
 
     /// Prepares the DMA for the next read and returns the raw pointer to the mmapped RAM buffer
     /// corresponding to the completed transfer, allowing copy/unpack to run outside the lock.
+    ///
+    /// The submit-before-read ordering here is critical: the next transfer is queued into the just-finished
+    /// buffer BEFORE it is read, keeping the 2-deep hardware queue full so it never underruns.
     pub fn prepare_audio_dma_read(&mut self) -> Option<(usize, *const u32)> {
-        if self.is_configuring || !self.dma_running {
+        if !self.dma_running {
             return None;
         }
 
@@ -1110,7 +1090,9 @@ impl PlutoSystem {
 
         // Queue the next transfer into current_offset (the buffer we just finished) BEFORE reading
         // it, to keep the 2-deep hardware queue full and never underrun
-        self.submit_dma_transfer(current_offset, max_bytes);
+        if !self.submit_dma_transfer(current_offset, max_bytes) {
+            return None;
+        }
 
         let _ = self.uio_file.write_all(&1u32.to_ne_bytes());
 
@@ -1122,9 +1104,9 @@ impl PlutoSystem {
         Some((MAX_AUDIO_SAMPLES, ram_ptr))
     }
 
-
     /// Submits one DMA transfer descriptor (dest address + length) to the AXI DMAC's
-    /// submission queue, then kicks it off via START_TRANSFER.
+    /// submission queue, then kicks it off via START_TRANSFER. Returns false (without
+    /// submitting) if the DMAC does not accept the descriptor within 100 ms.
     ///
     /// The DMAC's START_TRANSFER register reads back as 1 until the hardware has
     /// internally accepted the descriptor into its (2-deep) queue; writing a new
@@ -1133,37 +1115,19 @@ impl PlutoSystem {
     /// axi_dmac_start_transfer - see drivers/dma/dma-axi-dmac.c). Skipping this check
     /// silently drops every other submitted buffer, desyncing the ping-pong tracking
     /// from the hardware and producing periodic dropouts in the captured audio.
-    fn submit_dma_transfer(&mut self, dest_offset: u32, max_bytes: u32) {
-        while self.read_dma(DMA_REG_START_TRANSFER) != 0 {}
+    fn submit_dma_transfer(&mut self, dest_offset: u32, max_bytes: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while self.read_dma(DMA_REG_START_TRANSFER) != 0 {
+            if Instant::now() >= deadline {
+                warn!("AXI DMAC did not accept a transfer descriptor within 100 ms; skipping");
+                return false;
+            }
+        }
         self.write_dma(DMA_REG_DEST_ADDRESS, RAM_PHYS_ADDR as u32 + dest_offset);
         self.write_dma(DMA_REG_X_LENGTH, max_bytes - 1);
         self.write_dma(DMA_REG_START_TRANSFER, 0x1);
+        true
     }
-
-    /// Safely copies and unpacks samples from the memory-mapped DMA ring buffer.
-    /// RAM_PHYS_ADDR is naturally page-aligned (4KB bounds), and offset_bytes is a multiple
-    /// of 4 (samples are packed 32-bit values). Thus, the pointer cast to *const u32 is
-    /// guaranteed to be 32-bit aligned, preventing alignment faults on ARM v7.
-    pub fn copy_and_unpack_samples(
-        &self,
-        offset_bytes: usize,
-        count: usize,
-        i_buf: &mut Vec<i16>,
-        q_buf: &mut Vec<i16>,
-    ) {
-        i_buf.reserve(count);
-        q_buf.reserve(count);
-
-        unsafe {
-            let ram_ptr = (self.ram_buf.as_ptr() as *const u8).add(offset_bytes) as *const u32;
-            for i in 0..count {
-                let packed = read_volatile(ram_ptr.add(i));
-                i_buf.push((packed & 0xFFFF) as i16);
-                q_buf.push(((packed >> 16) & 0xFFFF) as i16);
-            }
-        }
-    }
-
 
     /// Clones the file descriptor handle of the UIO device file.
     pub fn clone_uio_file(&self) -> std::io::Result<std::fs::File> {
@@ -1242,6 +1206,45 @@ impl PlutoSystem {
     }
 }
 
+/// Unpacks DMA words ({Q,I} packed 16+16, I in the low half, matching `iq_packer.v`) into separate I/Q vectors.
+pub fn unpack_iq_words(words: &[u32], i_buf: &mut Vec<i16>, q_buf: &mut Vec<i16>) {
+    i_buf.reserve(words.len());
+    q_buf.reserve(words.len());
+    for &packed in words {
+        i_buf.push((packed & 0xFFFF) as i16);
+        q_buf.push(((packed >> 16) & 0xFFFF) as i16);
+    }
+}
+
+/// Blocks on the UIO file until the audio-DMA completion interrupt fires or `timeout_ms` elapses.
+/// Returns `Ok(Some(interrupt_count))`, `Ok(None)` on a timeout or
+/// EINTR (caller should just retry), and `Err` on a real poll/read failure.
+pub fn wait_for_uio_interrupt(
+    uio: &mut std::fs::File,
+    timeout_ms: i32,
+) -> std::io::Result<Option<u32>> {
+    let mut fds = [libc::pollfd {
+        fd: uio.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    // SAFETY: fds points to a valid stack-allocated array of size 1.
+    let poll_ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout_ms) };
+    if poll_ret < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            return Ok(None);
+        }
+        return Err(err);
+    }
+    if poll_ret == 0 {
+        return Ok(None);
+    }
+    let mut int_info = [0u8; 4];
+    uio.read_exact(&mut int_info)?;
+    Ok(Some(u32::from_ne_bytes(int_info)))
+}
+
 fn init_mem_system() -> Result<PlutoSystem, Box<dyn std::error::Error>> {
     let mem_file = OpenOptions::new()
         .read(true)
@@ -1287,9 +1290,9 @@ fn init_mem_system() -> Result<PlutoSystem, Box<dyn std::error::Error>> {
         rx_cic_decimation: 0,
         rx_burst_gate: true,
         tx_antenna: 0,
-        tx_cic_interpolation: 0,
+        tx_cic_interpolation: 4,
         tx_phase_inc: 0,
-        tx_dds_offset_hz: 50_000.0,
+        tx_dds_offset_hz: crate::DEFAULT_TX_OFFSET_HZ as f64,
         tx_dsp_enabled: true,
         is_configuring: false,
         dma_running: false,
@@ -1298,14 +1301,14 @@ fn init_mem_system() -> Result<PlutoSystem, Box<dyn std::error::Error>> {
 }
 
 /// AD9361 TX interface clock (fabric `l_clk`) frequency for a baseband sample rate `fs`.
-fn tx_interface_clock_hz(fs: f64) -> f64 {
+pub fn tx_interface_clock_hz(fs: f64) -> f64 {
     2.0 * fs
 }
 
 /// 16-bit phase increment for `tx_sample_enable` so its clock-enable strobe lands at exactly `fs`:
 /// `strobe = l_clk * phase_inc / 65536`  =>  `phase_inc = round(65536 * fs / l_clk)`.
 /// With `l_clk = 2 * fs` this is `round(65536 * 0.5) = 32768`. `fs/l_clk = 0.5`, so it fits in 16 bits.
-fn tx_strobe_phase_inc(fs: f64) -> u32 {
+pub fn tx_strobe_phase_inc(fs: f64) -> u32 {
     let l_clk = tx_interface_clock_hz(fs);
     ((65536.0 * fs / l_clk).round() as i64).clamp(0, 0xFFFF) as u32
 }
@@ -1313,18 +1316,21 @@ fn tx_strobe_phase_inc(fs: f64) -> u32 {
 /// FPGA CIC decimation for an RX baseband rate, targeting ~960 kHz into the AD9361 FIR: clamp to
 /// [4, 32] and round up to a power of two (`iq_packer.v`'s bit-shift audio scaling requires exact
 /// powers of two). This is the RX counterpart to the TX rate math in `tx_apply_dsp_config`.
-fn rx_cic_decimation_for_rate(rx_fs: i64) -> u32 {
+pub fn rx_cic_decimation_for_rate(rx_fs: i64) -> u32 {
     ((rx_fs / 960_000).clamp(4, 32) as u32).next_power_of_two()
 }
 
 /// Rounds a requested TX baseband rate to a clean multiple of 192 kHz (48 kHz x 4x FIR interpolation).
-fn tx_rounded_fs(tx_fs: f64) -> f64 {
+pub fn tx_rounded_fs(tx_fs: f64) -> f64 {
     (tx_fs / 192_000.0).round() * 192_000.0
 }
 
 /// FPGA CIC interpolation factor for a (already 192-kHz-rounded) TX rate. The hardware FIR compiler
 /// handles the 4x interpolation, so the CIC only covers 1/4 of the total factor.
-fn tx_cic_interpolation(rounded_tx_fs: f64) -> u32 {
-    let total_interpolation = (rounded_tx_fs / 48_000.0).round().max(16.0).min(256.0) as u32;
+pub fn tx_cic_interpolation(rounded_tx_fs: f64) -> u32 {
+    let total_interpolation = (rounded_tx_fs / crate::AUDIO_SAMPLE_RATE as f64)
+        .round()
+        .max(16.0)
+        .min(256.0) as u32;
     total_interpolation / 4
 }

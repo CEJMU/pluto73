@@ -45,7 +45,9 @@ pub fn run_pacing_dma_delay(rate_hz: Option<i64>) -> Result<(), Box<dyn std::err
 
     // Generate a 1 kHz tone
     let audio: Vec<f32> = (0..chunk_size)
-        .map(|n| (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / 48000.0).sin())
+        .map(|n| {
+            (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / pluto::AUDIO_SAMPLE_RATE as f32).sin()
+        })
         .collect();
 
     println!("Expected: ~85ms per push (4096 samples at 48 kHz effective rate)");
@@ -69,7 +71,7 @@ pub fn run_pacing_dma_delay(rate_hz: Option<i64>) -> Result<(), Box<dyn std::err
         }
 
         let overall_ms = overall_start.elapsed().as_secs_f64() * 1000.0;
-        let expected_ms = iterations as f64 * 4096.0 / 48000.0 * 1000.0;
+        let expected_ms = iterations as f64 * 4096.0 / pluto::AUDIO_SAMPLE_RATE as f64 * 1000.0;
 
         push_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let min = push_times[0];
@@ -158,10 +160,13 @@ pub fn run_pacing_dma_delay(rate_hz: Option<i64>) -> Result<(), Box<dyn std::err
         let secs = start.elapsed().as_secs_f64();
         let samples = (measure_pushes * chunk_size) as f64;
         let drain = samples / secs;
-        let total_interp = (fs_hz as f64 / 48000.0).round().max(16.0).min(256.0);
+        let total_interp = (fs_hz as f64 / pluto::AUDIO_SAMPLE_RATE as f64)
+            .round()
+            .max(16.0)
+            .min(256.0);
         let cur_divisor = 2.0;
         let l_clk = drain * cur_divisor * total_interp;
-        let divisor_for_48k = cur_divisor * drain / 48000.0;
+        let divisor_for_48k = cur_divisor * drain / pluto::AUDIO_SAMPLE_RATE as f64;
 
         println!(
             "  {} pushes x {} = {:.0} samples in {:.3}s",

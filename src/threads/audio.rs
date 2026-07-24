@@ -1,6 +1,4 @@
 use log::debug;
-use std::io::Read;
-use std::os::unix::io::AsRawFd;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -9,10 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
-use crate::MIN_SPAN_FM;
-use crate::device::PlutoSystem;
+use crate::device::{PlutoSystem, unpack_iq_words, wait_for_uio_interrupt};
 use crate::dsp::{AudioProcessor, Demodulation, FilterAudio};
 use crate::state::DemodMode;
+use crate::{AUDIO_SAMPLE_RATE, FILTER_BW_MIN_HZ, MIN_SPAN_FM, filter_bw_max_hz};
 
 #[derive(Clone, Debug)]
 pub struct AudioConfig {
@@ -20,7 +18,6 @@ pub struct AudioConfig {
     pub demod_mode: Demodulation,
     pub if_cutoff_hz: f32,
     pub fs_hz: i64,
-    pub is_configuring: bool,
 }
 
 /// Updates the hardware AXI DDS phase increment and the receiver software demodulator settings
@@ -49,12 +46,7 @@ pub fn update_audio_tuning(
     }
 
     // Clamp filter bandwidth to prevent unstable IIR coefficients (Nyquist safety margins)
-    let max_bw = if demod_mode_enum == DemodMode::USB || demod_mode_enum == DemodMode::LSB {
-        20_000.0 // 20 kHz max for SSB (48 kHz sample rate)
-    } else {
-        110_000.0 // 110 kHz max for FM (240 kHz sample rate)
-    };
-    let clamped_filter_bw = filter_bw.clamp(1000.0, max_bw);
+    let clamped_filter_bw = filter_bw.clamp(FILTER_BW_MIN_HZ, filter_bw_max_hz(demod_mode_enum));
 
     // Standard SSB convention (matched to the TX complex-FIR modulator, see tx_dsp.rs): the tuned
     // carrier is at baseband DC and the audio occupies ONE side of it - USB at [0, +bw], LSB at
@@ -64,7 +56,7 @@ pub fn update_audio_tuning(
     let (demod_mode, if_cutoff_hz) = match demod_mode_enum {
         DemodMode::USB => (
             Demodulation::SSB {
-                fs: 48_000.0,
+                fs: AUDIO_SAMPLE_RATE as f32,
                 bfo_hz: (clamped_filter_bw / 2.0),
                 audio_bw_hz: clamped_filter_bw,
             },
@@ -72,7 +64,7 @@ pub fn update_audio_tuning(
         ),
         DemodMode::LSB => (
             Demodulation::SSB {
-                fs: 48_000.0,
+                fs: AUDIO_SAMPLE_RATE as f32,
                 bfo_hz: -(clamped_filter_bw / 2.0),
                 audio_bw_hz: clamped_filter_bw,
             },
@@ -93,7 +85,6 @@ pub fn update_audio_tuning(
         cfg.demod_mode = demod_mode;
         cfg.if_cutoff_hz = if_cutoff_hz;
         cfg.fs_hz = fs_hz;
-        cfg.is_configuring = false;
     }
 
     debug!(
@@ -131,6 +122,8 @@ pub fn spawn_audio_thread(
 
         let mut i_ch: Vec<i16> = Vec::with_capacity(crate::device::MAX_AUDIO_SAMPLES);
         let mut q_ch: Vec<i16> = Vec::with_capacity(crate::device::MAX_AUDIO_SAMPLES);
+        // Reused DMA copy scratch: grown once, refilled every cycle (avoids a 64 KB alloc + zero-fill per DMA interrupt).
+        let mut dma_words: Vec<u32> = Vec::with_capacity(crate::device::MAX_AUDIO_SAMPLES);
 
         // --- Processing loop ---
         while !shutdown_audio.load(Ordering::Relaxed) {
@@ -148,8 +141,11 @@ pub fn spawn_audio_thread(
                 let cfg = audio_config.lock().unwrap();
                 cfg.clone()
             };
-            // RX CIC decimation is stored on PlutoSystem (the FPGA-fabric source of truth)
-            let rx_cic_decimation = { system.lock().unwrap().rx_cic_decimation };
+            // RX CIC decimation and the reconfiguring flag both live on PlutoSystem: read them in the same lock
+            let (rx_cic_decimation, is_configuring) = {
+                let sys = system.lock().unwrap();
+                (sys.rx_cic_decimation, sys.is_configuring)
+            };
 
             // Skip while audio is disabled.
             if !config.enabled {
@@ -160,49 +156,21 @@ pub fn spawn_audio_thread(
                 continue;
             }
 
-            // Skip while hardware is reconfiguring.
-            if config.is_configuring {
-                i_ch.clear();
-                q_ch.clear();
-                last_packet_time = Instant::now();
-                thread::sleep(Duration::from_millis(5));
-                continue;
-            }
-
             // Ensure the DMA hardware transfer is running.
             // Mutex is locked briefly to start DMA if needed.
             {
                 let mut sys = system.lock().unwrap();
-                if !sys.is_configuring {
-                    sys.ensure_dma_running();
-                }
+                sys.ensure_dma_running();
             }
 
             // Block on the UIO hardware interrupt
-            let raw_fd = uio_file.as_raw_fd();
-            let mut fds = [libc::pollfd {
-                fd: raw_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            }];
-            // SAFETY: fds points to a valid stack-allocated array of size 1.
-            let poll_ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 50) };
-
-            if poll_ret < 0 {
-                let err = std::io::Error::last_os_error();
-                if err.kind() == std::io::ErrorKind::Interrupted {
+            match wait_for_uio_interrupt(&mut uio_file, 50) {
+                Ok(Some(_)) => {}
+                Ok(None) => continue, // timeout or EINTR: retry
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(5));
                     continue;
                 }
-                thread::sleep(Duration::from_millis(5));
-                continue;
-            } else if poll_ret == 0 {
-                continue;
-            }
-
-            let mut int_info = [0u8; 4];
-            if uio_file.read_exact(&mut int_info).is_err() {
-                thread::sleep(Duration::from_millis(5));
-                continue;
             }
 
             // Clear the interrupt and get DMA read pointer.
@@ -210,14 +178,9 @@ pub fn spawn_audio_thread(
             let ram_ptr;
             {
                 let mut sys = system.lock().unwrap();
-                if !sys.is_configuring {
-                    if let Some((count, ptr)) = sys.prepare_audio_dma_read() {
-                        total_read = count;
-                        ram_ptr = ptr;
-                    } else {
-                        total_read = 0;
-                        ram_ptr = std::ptr::null();
-                    }
+                if let Some((count, ptr)) = sys.prepare_audio_dma_read() {
+                    total_read = count;
+                    ram_ptr = ptr;
                 } else {
                     total_read = 0;
                     ram_ptr = std::ptr::null();
@@ -225,19 +188,24 @@ pub fn spawn_audio_thread(
             }
 
             if total_read > 0 && !ram_ptr.is_null() {
-                // Copy the entire block in bulk into a local vector first.
+                // Copy the entire block in bulk into the reused scratch vector first.
                 // This uses optimized memcpy (AXI burst reads) which is much faster.
-                let mut local_buf = vec![0u32; total_read];
+                dma_words.clear();
+                dma_words.reserve(total_read);
+                // SAFETY: ram_ptr points at `total_read` packed samples in the mmapped DMA buffer. dma_words has just reserved at least that much capacity.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(ram_ptr, local_buf.as_mut_ptr(), total_read);
+                    std::ptr::copy_nonoverlapping(ram_ptr, dma_words.as_mut_ptr(), total_read);
+                    dma_words.set_len(total_read);
                 }
 
-                // Unpack from local cached memory.
-                i_ch.reserve(total_read);
-                q_ch.reserve(total_read);
-                for &packed in local_buf.iter() {
-                    i_ch.push((packed & 0xFFFF) as i16);
-                    q_ch.push(((packed >> 16) & 0xFFFF) as i16);
+                unpack_iq_words(&dma_words, &mut i_ch, &mut q_ch);
+
+                // Mute the audio stream while the hardware is configuring
+                if is_configuring {
+                    i_ch.clear();
+                    q_ch.clear();
+                    last_packet_time = Instant::now();
+                    continue;
                 }
             }
 

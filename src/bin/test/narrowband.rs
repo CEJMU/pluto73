@@ -1,11 +1,11 @@
-use pluto::device::{GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, PlutoTxDevice};
-use pluto::dsp::{AudioProcessor, Demodulation, FilterAudio};
-use crate::test::dsp_helpers::{apply_hamming_window, dominant_tone};
-use pluto::tx_dsp::{TxMode, TxModulator};
+use crate::test::dsp_helpers::{AUDIO_SAMPLE_RATE, apply_hamming_window, dominant_tone};
 use num_complex::Complex;
+use pluto::device::{
+    GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, PlutoTxDevice, wait_for_uio_interrupt,
+};
+use pluto::dsp::{AudioProcessor, Demodulation, FilterAudio};
+use pluto::tx_dsp::{TxMode, TxModulator};
 use rustfft::FftPlanner;
-use std::io::Read;
-use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -106,17 +106,9 @@ pub fn run_narrowband_rx(rate_hz: i64, secs: f32) -> Result<(), Box<dyn std::err
         let target_duration = Duration::from_secs_f32(secs);
         while start.elapsed() < target_duration {
             system.ensure_dma_running();
-            let mut fds = [libc::pollfd {
-                fd: uio.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            }];
-            if unsafe { libc::poll(fds.as_mut_ptr(), 1, 200) } <= 0 {
-                continue;
-            }
-            let mut int_info = [0u8; 4];
-            if uio.read_exact(&mut int_info).is_err() {
-                continue;
+            match wait_for_uio_interrupt(&mut uio, 200) {
+                Ok(Some(_)) => {}
+                _ => continue,
             }
             let nread = system
                 .read_audio_dma_samples(&mut i_ch, &mut q_ch)
@@ -197,7 +189,7 @@ pub fn run_narrowband_loopback(rate_hz: i64, _secs: f32) -> Result<(), Box<dyn s
     let antenna = 0u8;
     let offset = 50_000.0f64;
     let tone_hz = 1000.0f32;
-    const AFS: f32 = 48_000.0;
+    const AFS: f32 = AUDIO_SAMPLE_RATE as f32;
 
     let mut pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
     thread::sleep(Duration::from_millis(500));
@@ -263,17 +255,9 @@ pub fn run_narrowband_loopback(rate_hz: i64, _secs: f32) -> Result<(), Box<dyn s
             {
                 sys_rx.lock().unwrap().ensure_dma_running();
             }
-            let mut fds = [libc::pollfd {
-                fd: uio.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            }];
-            if unsafe { libc::poll(fds.as_mut_ptr(), 1, 100) } <= 0 {
-                continue;
-            }
-            let mut ii = [0u8; 4];
-            if uio.read_exact(&mut ii).is_err() {
-                continue;
+            match wait_for_uio_interrupt(&mut uio, 100) {
+                Ok(Some(_)) => {}
+                _ => continue,
             }
             let nread = {
                 sys_rx
@@ -328,13 +312,15 @@ pub fn run_narrowband_loopback(rate_hz: i64, _secs: f32) -> Result<(), Box<dyn s
     }
     println!("========================================");
     println!("- Target Span: {:.3} MHz", fs as f64 / 1e6);
-    println!("- Dominant Tone: {:.1} Hz (Expected: {:.1} Hz)", peak_hz, tone_hz);
+    println!(
+        "- Dominant Tone: {:.1} Hz (Expected: {:.1} Hz)",
+        peak_hz, tone_hz
+    );
     println!("- Frequency Error: {:.1} Hz", err);
     println!("- Peak/Spur Ratio: {:.1} dB (Threshold: >12.0 dB)", snr_db);
     println!("========================================\n");
     Ok(())
 }
-
 
 /// Modulates a continuous USB tone and pushes it to the TX DMA, clock-paced (uses resampler if dma_fs != 48 kHz).
 /// Mirrors the live TX path's modulator + resampler + DC-block stages.
@@ -359,16 +345,18 @@ fn transmit_usb_tone(
     );
 
     let chunk = 4096usize;
-    let total = (secs * 48_000.0) as usize;
+    let total = (secs * AUDIO_SAMPLE_RATE as f32) as usize;
     let mut t = 0u64;
-    let start = Instant::now();
+    let _start = Instant::now();
     let mut done = 0usize;
-    let mut sent_samples = 0usize;
+    let mut _sent_samples = 0usize;
 
     while done < total {
         let audio: Vec<f32> = (0..chunk)
             .map(|k| {
-                (2.0 * std::f32::consts::PI * tone_hz * (t + k as u64) as f32 / 48_000.0).sin()
+                (2.0 * std::f32::consts::PI * tone_hz * (t + k as u64) as f32
+                    / AUDIO_SAMPLE_RATE as f32)
+                    .sin()
             })
             .collect();
         t += chunk as u64;
@@ -383,14 +371,12 @@ fn transmit_usb_tone(
             r.process(&mi, &mq, &mut ri, &mut rq);
             if !ri.is_empty() {
                 tx.write_buffer(&ri, &rq)?;
-                sent_samples += ri.len();
+                _sent_samples += ri.len();
             }
         } else {
             tx.write_buffer(&mi, &mq)?;
-            sent_samples += mi.len();
+            _sent_samples += mi.len();
         }
-
     }
     Ok(())
 }
-

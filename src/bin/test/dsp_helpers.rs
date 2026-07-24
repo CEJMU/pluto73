@@ -1,8 +1,9 @@
 use industrial_io as iio;
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 
-const AUDIO_SAMPLE_RATE: u32 = 48_000;
+pub use pluto::AUDIO_SAMPLE_RATE;
+pub use pluto::dsp::filter_design::hamming_window;
 
 /// Sets the AD9361 BIST loopback mode via industrial_io attributes (1 = digital TX->RX inside the
 /// AD9361, bypassing DAC/RF/LO/ADC; 0 = off). Falls back to the debugfs path when the debug
@@ -128,12 +129,7 @@ pub fn read_wav_as_f32_mono(path: &str) -> Result<Vec<f32>, Box<dyn std::error::
 }
 
 /// Computes magnitudes at specific target frequencies using a single FFT for complex i16 samples.
-pub fn fft_mags_i16(
-    i_samples: &[i16],
-    q_samples: &[i16],
-    freqs: &[f64],
-    fs: f64,
-) -> Vec<f64> {
+pub fn fft_mags_i16(i_samples: &[i16], q_samples: &[i16], freqs: &[f64], fs: f64) -> Vec<f64> {
     let n = i_samples.len().min(q_samples.len());
     if n == 0 {
         return vec![0.0; freqs.len()];
@@ -159,21 +155,14 @@ pub fn fft_mags_i16(
 }
 
 /// Computes magnitudes at specific target frequencies using a single FFT for real f32 samples.
-pub fn fft_mags_f32(
-    samples: &[f32],
-    freqs: &[f64],
-    fs: f64,
-) -> Vec<f64> {
+pub fn fft_mags_f32(samples: &[f32], freqs: &[f64], fs: f64) -> Vec<f64> {
     let n = samples.len();
     if n == 0 {
         return vec![0.0; freqs.len()];
     }
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(n);
-    let mut buf: Vec<Complex<f32>> = samples
-        .iter()
-        .map(|&s| Complex::new(s, 0.0))
-        .collect();
+    let mut buf: Vec<Complex<f32>> = samples.iter().map(|&s| Complex::new(s, 0.0)).collect();
     fft.process(&mut buf);
 
     let bin_hz = fs / n as f64;
@@ -189,26 +178,10 @@ pub fn fft_mags_f32(
 
 /// Applies a Hamming window to a complex slice in-place.
 pub fn apply_hamming_window(buf: &mut [Complex<f32>]) {
-    let n = buf.len();
-    if n <= 1 {
-        return;
+    let window = hamming_window(buf.len());
+    for (sample, w) in buf.iter_mut().zip(window) {
+        *sample *= w;
     }
-    let denom = (n - 1) as f32;
-    for i in 0..n {
-        let w = 0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / denom).cos();
-        buf[i] *= w;
-    }
-}
-
-/// Generates a Hamming window of size `n`.
-pub fn hamming_window(n: usize) -> Vec<f32> {
-    if n <= 1 {
-        return vec![1.0; n];
-    }
-    let denom = (n - 1) as f32;
-    (0..n)
-        .map(|i| 0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / denom).cos())
-        .collect()
 }
 
 /// Dominant tone frequency (Hz) over the active (non-silent) region + its peak-to-largest-spur ratio.
@@ -307,5 +280,3 @@ pub fn write_wav_i16_stereo(
     writer.finalize()?;
     Ok(())
 }
-
-

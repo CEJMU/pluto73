@@ -1,18 +1,16 @@
-use pluto::device::{GainMode, MAX_AUDIO_SAMPLES, PlutoDevice};
+use crate::test::dsp_helpers::{AUDIO_SAMPLE_RATE, read_wav_as_f32_mono, write_wav_f32_mono};
+use pluto::device::{
+    GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, rx_cic_decimation_for_rate, wait_for_uio_interrupt,
+};
 use pluto::dsp::{AudioProcessor, Demodulation, FilterAudio};
 use pluto::tx_dsp::{IqResampler, TxMode, TxModulator, tx_dma_audio_fs};
-use crate::test::dsp_helpers::{read_wav_as_f32_mono, write_wav_f32_mono};
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use std::f64::consts::PI;
-use std::io::Read;
-use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-
-const AUDIO_SAMPLE_RATE: u32 = 48_000;
 
 /// Basic RF loopback verification.
 /// Uses a raw tone to verify basic transmission and reception loopback through the waterfall path (raw ADC).
@@ -34,6 +32,8 @@ pub fn run_rf_raw_loopback() -> Result<(), Box<dyn std::error::Error>> {
     system.rx_apply_dsp_config(antenna, fs_hz);
     system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
     system.reset_audio_dma_controller();
+    // This test measurement/RX-DDS convention below assumes +50 kHz specifically
+    system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
 
     println!(
         "Configuring RX (LO: {} MHz, Rate: {} MHz)...",
@@ -64,7 +64,7 @@ pub fn run_rf_raw_loopback() -> Result<(), Box<dyn std::error::Error>> {
     let mut tx_i = vec![0i16; chunk_size];
     let mut tx_q = vec![0i16; chunk_size];
     let mut t = 0u64;
-    let w_tx = 2.0 * PI * 1000.0 / 48000.0;
+    let w_tx = 2.0 * PI * 1000.0 / AUDIO_SAMPLE_RATE as f64;
     let num_iterations = 300;
 
     for i in 0..num_iterations {
@@ -159,12 +159,13 @@ pub fn run_rf_audio_loopback(
     let mut system = pluto.system;
 
     let antenna: u8 = 0;
-    let cic_decimation: u32 = ((fs_hz / 960_000).clamp(4, 32) as u32).next_power_of_two();
+    let cic_decimation: u32 = rx_cic_decimation_for_rate(fs_hz);
 
     println!("Configuring FPGA...");
     system.rx_apply_dsp_config(antenna, fs_hz);
     system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
     system.reset_audio_dma_controller();
+    system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
     system.rx_set_dds(-50_000.0, (fs_hz * 2) as f64);
 
     let mut rx = pluto.rx;
@@ -172,7 +173,11 @@ pub fn run_rf_audio_loopback(
     rx.set_frequencies(lo_hz, fs_hz)?;
     rx.set_rf_bandwidth(fs_hz)?;
     rx.set_gain(GainMode::Manual, Some(rx_gain_db))?;
-    println!("RX gain: {} dB (manual), LO: {} MHz", rx_gain_db, lo_hz as f64 / 1e6);
+    println!(
+        "RX gain: {} dB (manual), LO: {} MHz",
+        rx_gain_db,
+        lo_hz as f64 / 1e6
+    );
 
     println!("TX: LO={} MHz, +50 kHz DDS offset", lo_hz as f64 / 1e6);
     tx.antenna = antenna;
@@ -187,7 +192,11 @@ pub fn run_rf_audio_loopback(
     let filter_bw = 3_000.0f32;
     // Sign of bfo_hz selects the demod sideband (+ = USB, - = LSB); magnitude unused by the
     // analytic demod. Must match the TX modulator's sideband below.
-    let bfo_hz = if usb { filter_bw / 2.0 } else { -filter_bw / 2.0 };
+    let bfo_hz = if usb {
+        filter_bw / 2.0
+    } else {
+        -filter_bw / 2.0
+    };
     let if_cutoff_hz = filter_bw;
     let demod = Demodulation::SSB {
         fs: AUDIO_SAMPLE_RATE as f32,
@@ -196,7 +205,7 @@ pub fn run_rf_audio_loopback(
     };
 
     let dma_fs = fs_hz / cic_decimation as i64 / 4;
-    let target_audio_fs = 48_000.0f32;
+    let target_audio_fs = AUDIO_SAMPLE_RATE as f32;
     let sw_decimation = ((dma_fs as f64 / target_audio_fs as f64).round() as usize).max(1);
 
     println!(
@@ -236,28 +245,19 @@ pub fn run_rf_audio_loopback(
                 sys.ensure_dma_running();
             }
 
-            let raw_fd = uio_file.as_raw_fd();
-            let mut fds = [libc::pollfd {
-                fd: raw_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            }];
-            let poll_ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 100) };
-            if poll_ret <= 0 {
-                if last_packet.elapsed().as_secs() > 3 {
-                    let mut sys = system_rx.lock().unwrap();
-                    sys.rx_apply_dsp_config(antenna, fs_hz);
-                    sys.rx_set_dds(-50_000.0, (fs_hz * 2) as f64);
-                    sys.reset_audio_dma_controller();
-                    last_packet = Instant::now();
-                    println!("  [RX] DMA reset (no data for 3s)");
+            match wait_for_uio_interrupt(&mut uio_file, 100) {
+                Ok(Some(_)) => {}
+                _ => {
+                    if last_packet.elapsed().as_secs() > 3 {
+                        let mut sys = system_rx.lock().unwrap();
+                        sys.rx_apply_dsp_config(antenna, fs_hz);
+                        sys.rx_set_dds(-50_000.0, (fs_hz * 2) as f64);
+                        sys.reset_audio_dma_controller();
+                        last_packet = Instant::now();
+                        println!("  [RX] DMA reset (no data for 3s)");
+                    }
+                    continue;
                 }
-                continue;
-            }
-
-            let mut int_info = [0u8; 4];
-            if uio_file.read_exact(&mut int_info).is_err() {
-                continue;
             }
 
             let total_read;
@@ -343,14 +343,9 @@ pub fn run_rf_audio_loopback(
     }
 
     let total_chunks = all_chunks.len();
-    let tx_start = Instant::now();
+    let _tx_start = Instant::now();
 
     for (idx, chunk) in all_chunks.iter().enumerate() {
-        if idx >= prefill_chunks {
-            let target_time =
-                Duration::from_secs_f64((idx - prefill_chunks) as f64 * secs_per_chunk);
-        }
-
         let mut mod_i = Vec::new();
         let mut mod_q = Vec::new();
         modulator.process_chunk(chunk, &mut mod_i, &mut mod_q);
@@ -434,12 +429,13 @@ pub fn run_rf_tone_loopback(
 
     let lo_hz: i64 = 900_000_000;
     let antenna: u8 = 0;
-    let cic_decimation: u32 = ((fs_hz / 960_000).clamp(4, 32) as u32).next_power_of_two();
+    let cic_decimation: u32 = rx_cic_decimation_for_rate(fs_hz);
 
     println!("Configuring FPGA...");
     system.rx_apply_dsp_config(antenna, fs_hz);
     system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
     system.reset_audio_dma_controller();
+    system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
     system.rx_set_dds(-50_000.0, (fs_hz * 2) as f64);
 
     let mut rx = pluto.rx;
@@ -468,7 +464,7 @@ pub fn run_rf_tone_loopback(
     };
 
     let dma_fs = fs_hz / cic_decimation as i64 / 4;
-    let target_audio_fs = 48_000.0f32;
+    let target_audio_fs = AUDIO_SAMPLE_RATE as f32;
     let sw_decimation = ((dma_fs as f64 / target_audio_fs as f64).round() as usize).max(1);
 
     println!(
@@ -502,28 +498,19 @@ pub fn run_rf_tone_loopback(
                 sys.ensure_dma_running();
             }
 
-            let raw_fd = uio_file.as_raw_fd();
-            let mut fds = [libc::pollfd {
-                fd: raw_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            }];
-            let poll_ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 100) };
-            if poll_ret <= 0 {
-                if last_packet.elapsed().as_secs() > 3 {
-                    let mut sys = system_rx.lock().unwrap();
-                    sys.rx_apply_dsp_config(antenna, fs_hz);
-                    sys.rx_set_dds(-50_000.0, (fs_hz * 2) as f64);
-                    sys.reset_audio_dma_controller();
-                    last_packet = Instant::now();
-                    println!("  [RX] DMA reset (no data for 3s)");
+            match wait_for_uio_interrupt(&mut uio_file, 100) {
+                Ok(Some(_)) => {}
+                _ => {
+                    if last_packet.elapsed().as_secs() > 3 {
+                        let mut sys = system_rx.lock().unwrap();
+                        sys.rx_apply_dsp_config(antenna, fs_hz);
+                        sys.rx_set_dds(-50_000.0, (fs_hz * 2) as f64);
+                        sys.reset_audio_dma_controller();
+                        last_packet = Instant::now();
+                        println!("  [RX] DMA reset (no data for 3s)");
+                    }
+                    continue;
                 }
-                continue;
-            }
-
-            let mut int_info = [0u8; 4];
-            if uio_file.read_exact(&mut int_info).is_err() {
-                continue;
             }
 
             let total_read;
@@ -619,14 +606,9 @@ pub fn run_rf_tone_loopback(
     }
 
     let total_chunks = all_chunks.len();
-    let tx_start = Instant::now();
+    let _tx_start = Instant::now();
 
     for (idx, chunk) in all_chunks.iter().enumerate() {
-        if idx >= prefill_chunks {
-            let target_time =
-                Duration::from_secs_f64((idx - prefill_chunks) as f64 * secs_per_chunk);
-        }
-
         let mut mod_i = Vec::new();
         let mut mod_q = Vec::new();
         modulator.process_chunk(chunk, &mut mod_i, &mut mod_q);
@@ -681,5 +663,3 @@ pub fn run_rf_tone_loopback(
     println!("=== FPGA RF TONE LOOPBACK TEST COMPLETE ===");
     Ok(())
 }
-
-

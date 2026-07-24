@@ -44,6 +44,7 @@ impl FromStr for DemodMode {
 /// `AudioConfig` (owned by the audio thread). Lives only on the control loop.
 pub struct ControlState {
     pub is_running: bool,
+    pub antenna: u8,
     pub audio_enabled: bool,
     pub playback_hz: i64,
     pub demod_mode: DemodMode,
@@ -63,6 +64,7 @@ impl ControlState {
     pub fn new(initial_playback_hz: i64) -> Self {
         Self {
             is_running: true,
+            antenna: 0,
             audio_enabled: false,
             playback_hz: initial_playback_hz,
             demod_mode: DemodMode::FM,
@@ -72,7 +74,7 @@ impl ControlState {
             rx_gain_mode: GainMode::AgcSlow,
             rx_gain_db: 30.0,
             rf_bandwidth_hz: 0,
-            tx_offset_hz: 50_000,
+            tx_offset_hz: crate::DEFAULT_TX_OFFSET_HZ,
             iq_stream_enabled: false,
         }
     }

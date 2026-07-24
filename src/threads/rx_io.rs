@@ -1,7 +1,7 @@
 use log::error;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ pub enum IoCommand {
         center_hz: i64,
         span_hz: i64,
         rf_bandwidth_hz: i64,
+        request_id: Option<u64>,
     },
     SetAntenna(u8),
     SetTxState {
@@ -37,11 +38,17 @@ pub enum IoCommand {
 }
 
 /// Hardware readbacks reported to the control thread after a config command was applied.
+///
+/// Every dispatched config command produces exactly one completion message, success
+/// or failure. On failure the readbacks simply carry the old (still valid) hardware values.
 pub enum RxHardwareState {
     Retuned {
         lo_hz: i64,
         fs_hz: i64,
         rf_bandwidth_hz: i64,
+        /// Client request sequence id of the SetRxSpan this fulfils (None for internally generated span changes).
+        /// Passed through to `RxHardwareState::Retuned` and echoed to clients in `Config`.
+        request_id: Option<u64>,
     },
     BandwidthChanged {
         rf_bandwidth_hz: i64,
@@ -65,8 +72,9 @@ pub fn spawn_rx_io_thread(
         // --- Thread state ---
         let mut is_tx_active = false;
         let mut current_tx_lo = 0i64;
-        let mut tx_offset_hz = 50_000i64;
+        let mut tx_offset_hz = crate::DEFAULT_TX_OFFSET_HZ;
         let mut last_telemetry_time = Instant::now();
+        let mut last_rx_gain_poll_time = Instant::now();
         let mut actual_span = initial_fs_hz;
 
         // --- Telemetry + command + RX-read loop ---
@@ -79,6 +87,19 @@ pub fn spawn_rx_io_thread(
                         temp_c: temp,
                         vccint_v: vccint,
                         vccoddr_v: vccoddr,
+                    });
+                }
+            }
+
+            // While AGC is active, poll the hardware gain it settled on every 1s so the frontend can track it
+            if device.gain_mode != GainMode::Manual
+                && last_rx_gain_poll_time.elapsed() >= Duration::from_secs(1)
+            {
+                last_rx_gain_poll_time = Instant::now();
+                if let Ok((gain_db, _rssi)) = device.rx_signal_strength() {
+                    let _ = status_messages_tx.send(network::ServerMessage::RxGain {
+                        gain_db,
+                        mode: device.gain_mode.to_string(),
                     });
                 }
             }
@@ -115,6 +136,35 @@ pub fn spawn_rx_io_thread(
                             fs_hz: actual_span,
                         });
                     }
+                } else if let IoCommand::SetCenterFrequency(new_lo) = cmd {
+                    // Lightweight LO retune: RX and TX share one physical LO on this hardware, so
+                    // the RF LO itself must actually move, but the sample rate/clock and TX DMA feed are untouched.
+                    match device.set_frequencies(new_lo, actual_span) {
+                        Ok((actual_lo, fs)) => {
+                            actual_span = fs;
+                            let _ = config_tx.send(RxHardwareState::Retuned {
+                                lo_hz: actual_lo,
+                                fs_hz: fs,
+                                rf_bandwidth_hz: device.rf_bandwidth,
+                                request_id: None,
+                            });
+                            if is_tx_active {
+                                let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
+                                    lo_hz: current_tx_lo,
+                                    fs_hz: actual_span,
+                                });
+                            }
+                        }
+                        Err(err) => {
+                            error!("[RX IO Error] Failed to set center frequency: {}", err);
+                            let _ = config_tx.send(RxHardwareState::Retuned {
+                                lo_hz: device.frequency,
+                                fs_hz: device.sampling_frequency,
+                                rf_bandwidth_hz: device.rf_bandwidth,
+                                request_id: None,
+                            });
+                        }
+                    }
                 } else if let IoCommand::SetRfBandwidth(bw_hz) = cmd {
                     // Filter-only change: the sample clock and LO are untouched, so skip
                     // ConfigureStart/15 ms sleep/ConfigureEnd to prevent TX glitches.
@@ -142,31 +192,11 @@ pub fn spawn_rx_io_thread(
                     thread::sleep(Duration::from_millis(15)); // Give TX thread a brief moment to release the DMA
 
                     match cmd {
-                        IoCommand::SetCenterFrequency(new_lo) => {
-                            match device.set_frequencies(new_lo, actual_span) {
-                                Ok((actual_lo, fs)) => {
-                                    actual_span = fs;
-                                    let _ = config_tx.send(RxHardwareState::Retuned {
-                                        lo_hz: actual_lo,
-                                        fs_hz: fs,
-                                        rf_bandwidth_hz: device.rf_bandwidth,
-                                    });
-                                    if is_tx_active {
-                                        let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
-                                            lo_hz: current_tx_lo,
-                                            fs_hz: actual_span,
-                                        });
-                                    }
-                                }
-                                Err(err) => {
-                                    error!("[RX IO Error] Failed to set center frequency: {}", err);
-                                }
-                            }
-                        }
                         IoCommand::SetSpan {
                             center_hz,
                             span_hz,
                             rf_bandwidth_hz,
+                            request_id,
                         } => match device.set_frequencies(center_hz, span_hz) {
                             Ok((actual_lo, fs)) => {
                                 let target_bw = if rf_bandwidth_hz == 0 {
@@ -188,6 +218,7 @@ pub fn spawn_rx_io_thread(
                                     lo_hz: actual_lo,
                                     fs_hz: fs,
                                     rf_bandwidth_hz: device.rf_bandwidth,
+                                    request_id,
                                 });
                                 if is_tx_active {
                                     let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxFrequencies {
@@ -198,6 +229,12 @@ pub fn spawn_rx_io_thread(
                             }
                             Err(err) => {
                                 error!("[RX IO Error] Failed to set frequencies: {}", err);
+                                let _ = config_tx.send(RxHardwareState::Retuned {
+                                    lo_hz: device.frequency,
+                                    fs_hz: device.sampling_frequency,
+                                    rf_bandwidth_hz: device.rf_bandwidth,
+                                    request_id,
+                                });
                             }
                         },
                         IoCommand::SetAntenna(antenna) => {
@@ -207,10 +244,17 @@ pub fn spawn_rx_io_thread(
                                         lo_hz: device.frequency,
                                         fs_hz: device.sampling_frequency,
                                         rf_bandwidth_hz: device.rf_bandwidth,
+                                        request_id: None,
                                     });
                                 }
                                 Err(err) => {
                                     error!("[RX IO Error] Failed to set antenna: {}", err);
+                                    let _ = config_tx.send(RxHardwareState::Retuned {
+                                        lo_hz: device.frequency,
+                                        fs_hz: device.sampling_frequency,
+                                        rf_bandwidth_hz: device.rf_bandwidth,
+                                        request_id: None,
+                                    });
                                 }
                             }
                             {
@@ -272,8 +316,9 @@ pub fn spawn_rx_io_thread(
                         IoCommand::SetTxGain(db) => {
                             let _ = tx_io_cmd_tx.send(TxIoCommand::SetTxGain(db));
                         }
-                        IoCommand::SetRfBandwidth(_) => unreachable!(),
                         // Already handled
+                        IoCommand::SetCenterFrequency(_) => unreachable!(),
+                        IoCommand::SetRfBandwidth(_) => unreachable!(),
                         IoCommand::SetTxPlaybackFrequency(_) => unreachable!(),
                         IoCommand::SetTxOffset { .. } => unreachable!(),
                     }

@@ -40,7 +40,7 @@ if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
 
 # The design that will be created by this Tcl script contains the following 
 # module references:
-# burst_gate, dc_block_cmpy, dsp_mux_rx, dsp_mux_tx, iq_packer, tx_strobe_gen
+# burst_gate, dsp_mux_rx, dsp_mux_tx, iq_packer, tx_strobe_gen
 
 # Please add the sources of those modules before sourcing this Tcl script.
 
@@ -175,7 +175,6 @@ set bCheckModules 1
 if { $bCheckModules == 1 } {
    set list_check_mods "\ 
 burst_gate\
-dc_block_cmpy\
 dsp_mux_rx\
 dsp_mux_tx\
 iq_packer\
@@ -550,17 +549,6 @@ proc create_root_design { parentCell } {
   # Create instance: cpack, and set properties
   set cpack [ create_bd_cell -type ip -vlnv analog.com:user:util_cpack2:1.0 cpack ]
 
-  # Create instance: dc_block_cmpy_0, and set properties
-  set block_name dc_block_cmpy
-  set block_cell_name dc_block_cmpy_0
-  if { [catch {set dc_block_cmpy_0 [create_bd_cell -type module -reference $block_name $block_cell_name] } errmsg] } {
-     catch {common::send_gid_msg -ssname BD::TCL -id 2095 -severity "ERROR" "Unable to add referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
-     return 1
-   } elseif { $dc_block_cmpy_0 eq "" } {
-     catch {common::send_gid_msg -ssname BD::TCL -id 2096 -severity "ERROR" "Unable to referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
-     return 1
-   }
-  
   # Create instance: dds_valid, and set properties
   set dds_valid [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice:1.0 dds_valid ]
   set_property -dict [list \
@@ -672,10 +660,28 @@ proc create_root_design { parentCell } {
   # Create instance: rx_cmpy, and set properties
   set rx_cmpy [ create_bd_cell -type ip -vlnv xilinx.com:ip:cmpy:6.0 rx_cmpy ]
   set_property -dict [list \
+    CONFIG.ARESETN {true} \
     CONFIG.MinimumLatency {4} \
     CONFIG.OptimizeGoal {Performance} \
     CONFIG.OutputWidth {32} \
   ] $rx_cmpy
+
+
+  # Create instance: rx_cmpy_i, and set properties
+  set rx_cmpy_i [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice:1.0 rx_cmpy_i ]
+  set_property -dict [list \
+    CONFIG.DIN_FROM {31} \
+    CONFIG.DIN_WIDTH {64} \
+  ] $rx_cmpy_i
+
+
+  # Create instance: rx_cmpy_q, and set properties
+  set rx_cmpy_q [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice:1.0 rx_cmpy_q ]
+  set_property -dict [list \
+    CONFIG.DIN_FROM {63} \
+    CONFIG.DIN_TO {32} \
+    CONFIG.DIN_WIDTH {64} \
+  ] $rx_cmpy_q
 
 
   # Create instance: rx_data_fifo, and set properties
@@ -694,6 +700,7 @@ proc create_root_design { parentCell } {
     CONFIG.DDS_Clock_Rate {61.44} \
     CONFIG.DSP48_Use {Maximal} \
     CONFIG.Frequency_Resolution {0.014} \
+    CONFIG.Has_ARESETn {true} \
     CONFIG.Has_Phase_Out {false} \
     CONFIG.Latency {8} \
     CONFIG.M_DATA_Has_TUSER {Not_Required} \
@@ -727,6 +734,7 @@ proc create_root_design { parentCell } {
     CONFIG.Decimation_Rate {4} \
     CONFIG.Filter_Architecture {Systolic_Multiply_Accumulate} \
     CONFIG.Filter_Type {Decimation} \
+    CONFIG.Has_ARESETn {true} \
     CONFIG.Interpolation_Rate {1} \
     CONFIG.M_DATA_Has_TUSER {Not_Required} \
     CONFIG.Number_Channels {1} \
@@ -1254,13 +1262,13 @@ proc create_root_design { parentCell } {
   ] $tx_strobe
 
 
-  # Create instance: tx_strobe_gen_0, and set properties
+  # Create instance: tx_strobe_gen, and set properties
   set block_name tx_strobe_gen
-  set block_cell_name tx_strobe_gen_0
-  if { [catch {set tx_strobe_gen_0 [create_bd_cell -type module -reference $block_name $block_cell_name] } errmsg] } {
+  set block_cell_name tx_strobe_gen
+  if { [catch {set tx_strobe_gen [create_bd_cell -type module -reference $block_name $block_cell_name] } errmsg] } {
      catch {common::send_gid_msg -ssname BD::TCL -id 2095 -severity "ERROR" "Unable to add referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
      return 1
-   } elseif { $tx_strobe_gen_0 eq "" } {
+   } elseif { $tx_strobe_gen eq "" } {
      catch {common::send_gid_msg -ssname BD::TCL -id 2096 -severity "ERROR" "Unable to referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
      return 1
    }
@@ -1315,7 +1323,7 @@ proc create_root_design { parentCell } {
   connect_bd_net -net axi_ad9361_dac_enable_q0 [get_bd_pins axi_ad9361/dac_enable_q0] [get_bd_pins tx_upack/enable_1]
   connect_bd_net -net axi_ad9361_dac_enable_q1 [get_bd_pins axi_ad9361/dac_enable_q1] [get_bd_pins tx_upack/enable_3]
   connect_bd_net -net axi_ad9361_enable [get_bd_ports enable] [get_bd_pins axi_ad9361/enable]
-  connect_bd_net -net axi_ad9361_l_clk [get_bd_pins axi_ad9361/clk] [get_bd_pins axi_ad9361/l_clk] [get_bd_pins axi_ad9361_adc_dma/fifo_wr_clk] [get_bd_pins axi_ad9361_dac_dma/m_axis_aclk] [get_bd_pins axi_cpu_interconnect/M07_ACLK] [get_bd_pins axi_cpu_interconnect/M08_ACLK] [get_bd_pins axi_dmac_audio/s_axis_aclk] [get_bd_pins axi_gpio_rx/s_axi_aclk] [get_bd_pins axi_gpio_tx/s_axi_aclk] [get_bd_pins axi_tdd_0/clk] [get_bd_pins burst_gate/aclk] [get_bd_pins cpack/clk] [get_bd_pins dc_block_cmpy_0/clk] [get_bd_pins dsp_mux_rx_0/clk] [get_bd_pins dsp_mux_tx/clk] [get_bd_pins rst_axi_ad9361_100M/slowest_sync_clk] [get_bd_pins rx_cic_i/aclk] [get_bd_pins rx_cic_q/aclk] [get_bd_pins rx_cmpy/aclk] [get_bd_pins rx_data_fifo/s_axis_aclk] [get_bd_pins rx_dds_compiler/aclk] [get_bd_pins rx_fir/aclk] [get_bd_pins rx_iq_packer/clk] [get_bd_pins tx_cic_i/aclk] [get_bd_pins tx_cic_q/aclk] [get_bd_pins tx_cmpy/aclk] [get_bd_pins tx_dds_compiler/aclk] [get_bd_pins tx_fir/aclk] [get_bd_pins tx_strobe_gen_0/clk] [get_bd_pins tx_upack/clk]
+  connect_bd_net -net axi_ad9361_l_clk [get_bd_pins axi_ad9361/clk] [get_bd_pins axi_ad9361/l_clk] [get_bd_pins axi_ad9361_adc_dma/fifo_wr_clk] [get_bd_pins axi_ad9361_dac_dma/m_axis_aclk] [get_bd_pins axi_cpu_interconnect/M07_ACLK] [get_bd_pins axi_cpu_interconnect/M08_ACLK] [get_bd_pins axi_dmac_audio/s_axis_aclk] [get_bd_pins axi_gpio_rx/s_axi_aclk] [get_bd_pins axi_gpio_tx/s_axi_aclk] [get_bd_pins axi_tdd_0/clk] [get_bd_pins burst_gate/clk] [get_bd_pins cpack/clk] [get_bd_pins dsp_mux_rx_0/clk] [get_bd_pins dsp_mux_tx/clk] [get_bd_pins rst_axi_ad9361_100M/slowest_sync_clk] [get_bd_pins rx_cic_i/aclk] [get_bd_pins rx_cic_q/aclk] [get_bd_pins rx_cmpy/aclk] [get_bd_pins rx_data_fifo/s_axis_aclk] [get_bd_pins rx_dds_compiler/aclk] [get_bd_pins rx_fir/aclk] [get_bd_pins rx_iq_packer/clk] [get_bd_pins tx_cic_i/aclk] [get_bd_pins tx_cic_q/aclk] [get_bd_pins tx_cmpy/aclk] [get_bd_pins tx_dds_compiler/aclk] [get_bd_pins tx_fir/aclk] [get_bd_pins tx_strobe_gen/clk] [get_bd_pins tx_upack/clk]
   connect_bd_net -net axi_ad9361_rst [get_bd_pins ad9361_resetn/Op1] [get_bd_pins axi_ad9361/rst] [get_bd_pins cpack/reset] [get_bd_pins logic_inv/Op1] [get_bd_pins or_tx_reset/Op1]
   connect_bd_net -net axi_ad9361_tx_clk_out [get_bd_ports tx_clk_out] [get_bd_pins axi_ad9361/tx_clk_out]
   connect_bd_net -net axi_ad9361_tx_data_out [get_bd_ports tx_data_out] [get_bd_pins axi_ad9361/tx_data_out]
@@ -1332,18 +1340,15 @@ proc create_root_design { parentCell } {
   connect_bd_net -net axi_spi_sck_o [get_bd_ports spi_clk_o] [get_bd_pins axi_spi/sck_o]
   connect_bd_net -net axi_spi_ss_o [get_bd_ports spi_csn_o] [get_bd_pins axi_spi/ss_o]
   connect_bd_net -net axi_tdd_0_tdd_channel_0 [get_bd_ports txdata_o] [get_bd_pins axi_tdd_0/tdd_channel_0]
-  connect_bd_net -net axi_tdd_0_tdd_channel_1 [get_bd_pins axi_ad9361_adc_dma/fifo_wr_sync] [get_bd_pins axi_tdd_0/tdd_channel_1]
+  connect_bd_net -net axi_tdd_0_tdd_channel_1 -boundary_type upper [get_bd_pins axi_tdd_0/tdd_channel_1]
   connect_bd_net -net axi_tdd_0_tdd_channel_2 [get_bd_pins axi_tdd_0/tdd_channel_2] [get_bd_pins or_tx_reset/Op2]
   connect_bd_net -net burst_enabled_Dout [get_bd_pins burst_enabled/Dout] [get_bd_pins burst_gate/enabled]
+  connect_bd_net -net burst_gate_m_fifo_wr_sync [get_bd_pins axi_ad9361_adc_dma/fifo_wr_sync] [get_bd_pins burst_gate/m_fifo_wr_sync]
   connect_bd_net -net burst_trigger_Dout [get_bd_pins burst_gate/trigger] [get_bd_pins burst_trigger/Dout]
   connect_bd_net -net cic_compiler_2_m_axis_data_tdata [get_bd_pins tx_cic_data/In0] [get_bd_pins tx_cic_i/m_axis_data_tdata]
   connect_bd_net -net cic_compiler_2_m_axis_data_tvalid [get_bd_pins tx_cic_i/m_axis_data_tvalid] [get_bd_pins tx_cmpy/s_axis_a_tvalid]
   connect_bd_net -net cic_compiler_3_m_axis_data_tdata [get_bd_pins tx_cic_data/In1] [get_bd_pins tx_cic_q/m_axis_data_tdata]
-  connect_bd_net -net cmpy_0_m_axis_dout_tdata [get_bd_pins dc_block_cmpy_0/din] [get_bd_pins rx_cmpy/m_axis_dout_tdata]
-  connect_bd_net -net cmpy_0_m_axis_dout_tvalid [get_bd_pins rx_cic_i/s_axis_data_tvalid] [get_bd_pins rx_cic_q/s_axis_data_tvalid] [get_bd_pins rx_cmpy/m_axis_dout_tvalid]
   connect_bd_net -net cpack_fifo_wr_overflow [get_bd_pins axi_ad9361/adc_dovf] [get_bd_pins cpack/fifo_wr_overflow]
-  connect_bd_net -net dc_block_cmpy_0_out_i [get_bd_pins dc_block_cmpy_0/out_i] [get_bd_pins rx_cic_i/s_axis_data_tdata]
-  connect_bd_net -net dc_block_cmpy_0_out_q [get_bd_pins dc_block_cmpy_0/out_q] [get_bd_pins rx_cic_q/s_axis_data_tdata]
   connect_bd_net -net dsp_mux_rx_0_out_i [get_bd_pins dsp_mux_rx_0/out_i] [get_bd_pins rx_raw_data/In0]
   connect_bd_net -net dsp_mux_rx_0_out_q [get_bd_pins dsp_mux_rx_0/out_q] [get_bd_pins rx_raw_data/In1]
   connect_bd_net -net dsp_mux_tx_0_out_i0 [get_bd_pins axi_ad9361/dac_data_i0] [get_bd_pins dsp_mux_tx/dac_i0]
@@ -1360,10 +1365,12 @@ proc create_root_design { parentCell } {
   connect_bd_net -net logic_inv_Res [get_bd_pins axi_tdd_0/resetn] [get_bd_pins logic_inv/Res]
   connect_bd_net -net logic_or_1_Res [get_bd_pins or_tx_reset/Res] [get_bd_pins tx_upack/reset]
   connect_bd_net -net mixer_mode_Dout [get_bd_pins cic_config_valid/Dout] [get_bd_pins rx_cic_i/s_axis_config_tvalid] [get_bd_pins rx_cic_q/s_axis_config_tvalid]
-  connect_bd_net -net reset_Dout [get_bd_pins dc_block_cmpy_0/rst_n] [get_bd_pins reset/Dout] [get_bd_pins rx_cic_i/aresetn] [get_bd_pins rx_cic_q/aresetn] [get_bd_pins rx_data_fifo/s_axis_aresetn] [get_bd_pins rx_iq_packer/resetn]
+  connect_bd_net -net reset_Dout [get_bd_pins reset/Dout] [get_bd_pins rx_cic_i/aresetn] [get_bd_pins rx_cic_q/aresetn] [get_bd_pins rx_cmpy/aresetn] [get_bd_pins rx_data_fifo/s_axis_aresetn] [get_bd_pins rx_dds_compiler/aresetn] [get_bd_pins rx_fir/aresetn] [get_bd_pins rx_iq_packer/resetn]
   connect_bd_net -net rst_axi_ad9361_100M_peripheral_aresetn [get_bd_pins axi_cpu_interconnect/M07_ARESETN] [get_bd_pins axi_cpu_interconnect/M08_ARESETN] [get_bd_pins axi_gpio_rx/s_axi_aresetn] [get_bd_pins axi_gpio_tx/s_axi_aresetn] [get_bd_pins rst_axi_ad9361_100M/peripheral_aresetn]
   connect_bd_net -net rx_antenna_ctrl_Dout [get_bd_pins dsp_mux_rx_0/sel] [get_bd_pins rx_antenna_ctrl/Dout]
   connect_bd_net -net rx_clk_in_1 [get_bd_ports rx_clk_in] [get_bd_pins axi_ad9361/rx_clk_in]
+  connect_bd_net -net rx_cmpy_m_axis_dout_tdata [get_bd_pins rx_cmpy/m_axis_dout_tdata] [get_bd_pins rx_cmpy_i/Din] [get_bd_pins rx_cmpy_q/Din]
+  connect_bd_net -net rx_cmpy_m_axis_dout_tvalid [get_bd_pins rx_cic_i/s_axis_data_tvalid] [get_bd_pins rx_cic_q/s_axis_data_tvalid] [get_bd_pins rx_cmpy/m_axis_dout_tvalid]
   connect_bd_net -net rx_data_in_1 [get_bd_ports rx_data_in] [get_bd_pins axi_ad9361/rx_data_in]
   connect_bd_net -net rx_frame_in_1 [get_bd_ports rx_frame_in] [get_bd_pins axi_ad9361/rx_frame_in]
   connect_bd_net -net spi0_clk_i_1 [get_bd_ports spi0_clk_i] [get_bd_pins sys_ps7/SPI0_SCLK_I]
@@ -1393,8 +1400,8 @@ proc create_root_design { parentCell } {
   connect_bd_net -net tx_cic_i_s_axis_data_tready [get_bd_pins tx_cic_i/s_axis_data_tready] [get_bd_pins tx_fir/m_axis_data_tready]
   connect_bd_net -net tx_cic_valid_Dout [get_bd_pins tx_dds_compiler/s_axis_config_tvalid] [get_bd_pins tx_dds_valid/Dout]
   connect_bd_net -net tx_dsp_enable_Dout [get_bd_pins dsp_mux_tx/enabled] [get_bd_pins tx_dsp_enable/Dout]
-  connect_bd_net -net tx_fir_mode_Dout [get_bd_pins tx_strobe/Dout] [get_bd_pins tx_strobe_gen_0/phase_inc]
-  connect_bd_net -net tx_sample_enable_0_enable [get_bd_pins dsp_mux_tx/strobe_in] [get_bd_pins tx_cic_i/m_axis_data_tready] [get_bd_pins tx_cic_q/m_axis_data_tready] [get_bd_pins tx_strobe_gen_0/enable]
+  connect_bd_net -net tx_fir_mode_Dout [get_bd_pins tx_strobe/Dout] [get_bd_pins tx_strobe_gen/phase_inc]
+  connect_bd_net -net tx_sample_enable_0_enable [get_bd_pins dsp_mux_tx/strobe_in] [get_bd_pins tx_cic_i/m_axis_data_tready] [get_bd_pins tx_cic_q/m_axis_data_tready] [get_bd_pins tx_strobe_gen/strobe_out]
   connect_bd_net -net tx_upack_fifo_rd_data_0 [get_bd_pins dsp_mux_tx/dma_i0] [get_bd_pins tx_upack/fifo_rd_data_0]
   connect_bd_net -net tx_upack_fifo_rd_data_1 [get_bd_pins dsp_mux_tx/dma_q0] [get_bd_pins tx_upack/fifo_rd_data_1]
   connect_bd_net -net tx_upack_fifo_rd_data_2 [get_bd_pins dsp_mux_tx/dma_i1] [get_bd_pins tx_upack/fifo_rd_data_2]
@@ -1403,10 +1410,12 @@ proc create_root_design { parentCell } {
   connect_bd_net -net tx_upack_fifo_rd_valid [get_bd_pins dsp_mux_tx/dma_valid] [get_bd_pins tx_upack/fifo_rd_valid]
   connect_bd_net -net up_enable_1 [get_bd_ports up_enable] [get_bd_pins axi_ad9361/up_enable]
   connect_bd_net -net up_txnrx_1 [get_bd_ports up_txnrx] [get_bd_pins axi_ad9361/up_txnrx]
-  connect_bd_net -net util_vector_logic_0_Res [get_bd_pins ad9361_resetn/Res] [get_bd_pins burst_gate/aresetn]
+  connect_bd_net -net util_vector_logic_0_Res [get_bd_pins ad9361_resetn/Res] [get_bd_pins burst_gate/rst_n]
   connect_bd_net -net xlconcat_0_dout [get_bd_pins rx_cmpy/s_axis_a_tdata] [get_bd_pins rx_raw_data/dout]
   connect_bd_net -net xlconcat_1_dout [get_bd_pins tx_cic_data/dout] [get_bd_pins tx_cmpy/s_axis_a_tdata]
   connect_bd_net -net xlconcat_tx_fir_dout [get_bd_pins tx_fir/s_axis_data_tdata] [get_bd_pins tx_raw_data/dout]
+  connect_bd_net -net xlslice_0_Dout [get_bd_pins rx_cic_i/s_axis_data_tdata] [get_bd_pins rx_cmpy_i/Dout]
+  connect_bd_net -net xlslice_1_Dout [get_bd_pins rx_cic_q/s_axis_data_tdata] [get_bd_pins rx_cmpy_q/Dout]
   connect_bd_net -net xlslice_2_Dout [get_bd_pins cic_config/Dout] [get_bd_pins rx_cic_i/s_axis_config_tdata] [get_bd_pins rx_cic_q/s_axis_config_tdata] [get_bd_pins rx_iq_packer/dec_rate]
   connect_bd_net -net xlslice_2_Dout1 [get_bd_pins dds_valid/Dout] [get_bd_pins rx_dds_compiler/s_axis_config_tvalid]
   connect_bd_net -net xlslice_3_Dout [get_bd_pins dsp_mux_tx/cic_interp] [get_bd_pins tx_cic_config/Dout] [get_bd_pins tx_cic_i/s_axis_config_tdata] [get_bd_pins tx_cic_q/s_axis_config_tdata]

@@ -1,9 +1,11 @@
-use pluto::device::{GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, PlutoTxDevice};
+use crate::test::dsp_helpers::{
+    AUDIO_SAMPLE_RATE, LoopbackGuard, fft_mags_i16, write_wav_i16_stereo,
+};
+use pluto::device::{
+    GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, PlutoTxDevice, wait_for_uio_interrupt,
+};
 use pluto::tx_dsp::{TxMode, TxModulator};
-use crate::test::dsp_helpers::{fft_mags_i16, write_wav_i16_stereo, LoopbackGuard};
 use std::f64::consts::PI;
-use std::io::Read;
-use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -51,7 +53,9 @@ fn write_buffer_once(
 pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== AUDIO DMA PROBE ===");
     println!("Reads raw FPGA audio DMA data and analyzes spectrum.");
-    println!("Note: RX audio path is permanently wired to TX post-DDS output in this FPGA design.\n");
+    println!(
+        "Note: RX audio path is permanently wired to TX post-DDS output in this FPGA design.\n"
+    );
 
     let pluto = PlutoDevice::open(16384, 4096).map_err(|e| e.to_string())?;
     thread::sleep(Duration::from_millis(500));
@@ -70,6 +74,9 @@ pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
     system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
     system.reset_audio_dma_controller();
 
+    // This test measurement/RX-DDS convention below assumes +50 kHz specifically
+    system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
+
     // RX DDS at -50 kHz (undo TX DDS)
     system.rx_set_dds(-50_000.0, (fs_hz * 2) as f64);
 
@@ -85,10 +92,6 @@ pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
     tx.set_rf_bandwidth(fs_hz)?;
     tx.set_gain(0.0)?;
     tx.init_channels()?;
-
-    // Base configuration for GPIO RX
-    let base_val = 0x01 | (cic_decimation << 4) | ((antenna as u32) << 13);
-    system.write_gpio_rx(0x00, base_val);
 
     // Audio DMA sample rate: fs / cic_decimation / 4 (FIR)
     let dma_fs = fs_hz / cic_decimation as i64 / 4; // 240000
@@ -109,11 +112,11 @@ pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
     let stop_tx2 = stop_tx.clone();
     let tx_handle = thread::spawn(move || {
         let chunk_size = 4096;
-        let w = 2.0 * PI * 1000.0 / 48000.0;
+        let w = 2.0 * PI * 1000.0 / AUDIO_SAMPLE_RATE as f64;
         let mut t = 0u64;
         let mut tx_i = vec![0i16; chunk_size];
         let mut tx_q = vec![0i16; chunk_size];
-        let start = Instant::now();
+        let _start = Instant::now();
 
         while !stop_tx2.load(Ordering::Relaxed) {
             for n in 0..chunk_size {
@@ -123,7 +126,6 @@ pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
                 t += 1;
             }
             let _ = tx.write_buffer(&tx_i, &tx_q);
-
         }
         tx
     });
@@ -143,12 +145,12 @@ pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
         let mut modulator = TxModulator::new(TxMode::USB, 3_000.0, 3_840_000.0);
         let chunk_size = 4096;
         let mut t_audio = 0u64;
-        let start = Instant::now();
+        let _start = Instant::now();
 
         while !stop_tx2.load(Ordering::Relaxed) {
             let audio: Vec<f32> = (0..chunk_size)
                 .map(|n| {
-                    let t = (t_audio + n as u64) as f32 / 48000.0;
+                    let t = (t_audio + n as u64) as f32 / AUDIO_SAMPLE_RATE as f32;
                     (2.0 * std::f32::consts::PI * 1000.0 * t).sin()
                 })
                 .collect();
@@ -158,7 +160,6 @@ pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
             let mut out_q = Vec::new();
             modulator.process_chunk(&audio, &mut out_i, &mut out_q);
             let _ = tx.write_buffer(&out_i, &out_q);
-
         }
         tx
     });
@@ -201,12 +202,13 @@ pub fn run_dma_probe() -> Result<(), Box<dyn std::error::Error>> {
     println!("========================================");
     println!("- 1 kHz SSB Signal Level: {:.1}", ssb_mag);
     println!("- 50 kHz Noise Floor: {:.1}", noise_mag);
-    println!("- Signal-to-Noise Ratio: {:.1} dB (Threshold: >15.0 dB)", snr_db);
+    println!(
+        "- Signal-to-Noise Ratio: {:.1} dB (Threshold: >15.0 dB)",
+        snr_db
+    );
     println!("========================================\n");
     Ok(())
 }
-
-
 
 /// Measures the true transmit carrier and opposite-sideband suppression through the audio DMA
 /// path with the RX DDS deliberately offset from the TX DDS. With the RX DDS at -45 kHz the TX
@@ -234,6 +236,8 @@ pub fn run_carrier_offset_probe(loopback: bool) -> Result<(), Box<dyn std::error
     system.rx_apply_dsp_config(antenna, fs_hz);
     system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
     system.reset_audio_dma_controller();
+    // This test measurement/RX-DDS convention below assumes +50 kHz specifically
+    system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
     // RX DDS 5 kHz short of the TX DDS: the TX carrier lands at +5 kHz, clear of the DC notch.
     system.rx_set_dds(-45_000.0, (fs_hz * 2) as f64);
 
@@ -247,11 +251,11 @@ pub fn run_carrier_offset_probe(loopback: bool) -> Result<(), Box<dyn std::error
     tx.set_rf_bandwidth(fs_hz)?;
     tx.init_channels()?;
 
-    let base_val = 0x01 | (cic_decimation << 4) | ((antenna as u32) << 13);
-    system.write_gpio_rx(0x00, base_val);
-
-    let _loopback = loopback
-        .then(|| LoopbackGuard::enable("--loopback requested but AD9361 loopback unavailable; capturing over RF"));
+    let _loopback = loopback.then(|| {
+        LoopbackGuard::enable(
+            "--loopback requested but AD9361 loopback unavailable; capturing over RF",
+        )
+    });
 
     let system = Arc::new(Mutex::new(system));
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -317,7 +321,7 @@ pub fn run_carrier_offset_probe(loopback: bool) -> Result<(), Box<dyn std::error
         while !stop_tx2.load(Ordering::Relaxed) {
             let audio: Vec<f32> = (0..chunk_size)
                 .map(|n| {
-                    let t = (t_audio + n as u64) as f32 / 48000.0;
+                    let t = (t_audio + n as u64) as f32 / AUDIO_SAMPLE_RATE as f32;
                     (2.0 * std::f32::consts::PI * 1000.0 * t).sin()
                 })
                 .collect();
@@ -403,6 +407,8 @@ pub fn run_dma_continuity() -> Result<(), Box<dyn std::error::Error>> {
     system.rx_apply_dsp_config(antenna, fs_hz);
     system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
     system.reset_audio_dma_controller();
+    // This test measurement/RX-DDS convention below assumes +50 kHz specifically
+    system.tx_set_dds(50_000.0, (fs_hz * 2) as f64);
     // Undo the TX DDS +50 kHz so the injected tone lands at its baseband frequency.
     system.rx_set_dds(-50_000.0, (fs_hz * 2) as f64);
 
@@ -416,15 +422,11 @@ pub fn run_dma_continuity() -> Result<(), Box<dyn std::error::Error>> {
     tx.set_rf_bandwidth(fs_hz)?;
     tx.set_gain(0.0)?;
 
-    // GPIO RX setup
-    let base_val = 0x01 | (cic_decimation << 4) | ((antenna as u32) << 13);
-    system.write_gpio_rx(0x00, base_val);
-
     // Build a seamlessly-looping complex tone: 3000 Hz completes exactly 256 cycles in the
     // 4096-sample buffer at 48 kHz, so the cyclic wrap has no phase discontinuity.
     let buf_len = 4096usize;
     let tone_tx_hz = 3000.0f64;
-    let w = 2.0 * PI * tone_tx_hz / 48000.0;
+    let w = 2.0 * PI * tone_tx_hz / AUDIO_SAMPLE_RATE as f64;
     let mut ti = vec![0i16; buf_len];
     let mut tq = vec![0i16; buf_len];
     for n in 0..buf_len {
@@ -451,7 +453,6 @@ pub fn run_dma_continuity() -> Result<(), Box<dyn std::error::Error>> {
     analyze_continuity(&i_data, &q_data, dma_fs, MAX_AUDIO_SAMPLES);
 
     let _ = tx.set_gain(-89.75);
-
 
     println!("\n=== DMA CONTINUITY TEST COMPLETE ===");
     Ok(())
@@ -565,7 +566,11 @@ fn analyze_continuity(i_data: &[i16], q_data: &[i16], fs: f64, buf_samples: usiz
     println!("========================================");
     println!("- Tearing events (mid-buffer): {}", mid);
     println!("- Dropped frames (boundary-aligned): {}", boundary);
-    println!("- Distinct affected buffers: {}/{}", buffers_with_mid.len(), num_buffers.saturating_sub(2));
+    println!(
+        "- Distinct affected buffers: {}/{}",
+        buffers_with_mid.len(),
+        num_buffers.saturating_sub(2)
+    );
     println!("========================================\n");
 }
 
@@ -592,20 +597,9 @@ fn capture_audio_dma(
             sys.ensure_dma_running();
         }
 
-        let raw_fd = uio_file.as_raw_fd();
-        let mut fds = [libc::pollfd {
-            fd: raw_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-        let poll_ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 200) };
-        if poll_ret <= 0 {
-            continue;
-        }
-
-        let mut int_info = [0u8; 4];
-        if uio_file.read_exact(&mut int_info).is_err() {
-            continue;
+        match wait_for_uio_interrupt(&mut uio_file, 200) {
+            Ok(Some(_)) => {}
+            _ => continue,
         }
 
         let total_read;
@@ -700,5 +694,3 @@ fn analyze_dma_data(label: &str, i_data: &[i16], q_data: &[i16], fs: f64) {
         );
     }
 }
-
-

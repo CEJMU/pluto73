@@ -12,11 +12,14 @@ module burst_gate #(
     // Must match `WATERFALL_DMA_SIZE` (16384) in the Rust backend (src/main.rs)
     parameter integer BURST_LEN = 16384
 )(
-    input wire aclk,
-    input wire aresetn,
+    input wire clk,
+    (* X_INTERFACE_IGNORE = "TRUE" *)
+    input wire rst_n,
     
     // Control inputs
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input wire trigger,    // Rising edge triggers a new burst
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input wire enabled,    // 1 = Gated burst mode enabled, 0 = Gated burst mode disabled (pass-through)
     
     // Data input
@@ -30,13 +33,16 @@ module burst_gate #(
     output wire m_fifo_wr_sync
 );
 
+    // Just wide enough to count 0..BURST_LEN-1
+    localparam integer CNT_W = $clog2(BURST_LEN);
+
     reg active;
-    reg [15:0] count;
+    reg [CNT_W-1:0] count;
     reg prev_trigger;
 
     // Detect rising edge on trigger input
-    always @(posedge aclk) begin
-        if (!aresetn) begin
+    always @(posedge clk) begin
+        if (!rst_n) begin
             prev_trigger <= 1'b0;
         end else begin
             prev_trigger <= trigger;
@@ -46,18 +52,18 @@ module burst_gate #(
     wire trigger_pulse = trigger && !prev_trigger;
 
     // Burst Control State Machine
-    always @(posedge aclk) begin
-        if (!aresetn) begin
+    always @(posedge clk) begin
+        if (!rst_n) begin
             active <= 1'b0;
-            count  <= 16'd0;
+            count  <= {CNT_W{1'b0}};
         end else if (!enabled) begin
             active <= 1'b0;
-            count  <= 16'd0;
+            count  <= {CNT_W{1'b0}};
         end else begin
             if (!active) begin
                 if (trigger_pulse) begin
                     active <= 1'b1;
-                    count  <= 16'd0;
+                    count  <= {CNT_W{1'b0}};
                 end
             end else begin
                 if (s_fifo_wr_en) begin
@@ -65,7 +71,7 @@ module burst_gate #(
                         // Let this last sample pass through (active is still 1 this cycle,
                         // so m_fifo_wr_en fires), then deactivate on the next cycle.
                         active <= 1'b0;
-                        count  <= 16'd0;
+                        count  <= {CNT_W{1'b0}};
                     end else begin
                         count <= count + 1'b1;
                     end

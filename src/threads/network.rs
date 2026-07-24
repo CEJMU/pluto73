@@ -1,3 +1,4 @@
+use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -7,30 +8,88 @@ use warp::filters::ws::{Message, WebSocket};
 use warp::http::StatusCode;
 use warp::{Filter, Rejection, Reply, ws::Ws};
 
+/// Binary WebSocket frame layout, shared by every stream. Bytes:
+/// 0: frame type,
+/// 1-3: are reserved/zero,
+/// HEADER_BYTES: payload start
+pub mod msg_header {
+    pub const HEADER_BYTES: usize = 4;
+    /// Server -> client: one u8-per-bin waterfall row.
+    pub const WATERFALL: u8 = 0;
+    /// Server -> client: demodulated RX audio, f32 LE PCM.
+    pub const AUDIO: u8 = 1;
+    /// Client -> server: TX audio, f32 LE PCM.
+    pub const TX_AUDIO: u8 = 2;
+    /// Server -> client: raw interleaved i16 LE I/Q (opt-in via SetRxIqStream).
+    pub const IQ: u8 = 3;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum ControlCommand {
     Start,
     Stop,
-    SetRxFrequency { hz: u64 },
-    SetRxCenterFrequency { hz: u64 },
-    SetRxSpan { center_hz: u64, span_hz: u64 },
-    SetRxAudioEnabled { enabled: bool },
-    SetRxDemodulation { mode: String, filter_bw_hz: f32 },
-    SetRxWaterfallInterval { ms: u64 },
-    SetRxAntenna { antenna: u8 },
-    SetTxState { active: bool, tx_gain_db: f64 },
-    SetTxModulation { mode: String, filter_bw_hz: f32 },
-    SetTxOffset { hz: i64 },
-    SetRxGainMode { mode: String },
-    SetRxGain { db: f64 },
-    SetTxGain { db: f64 },
-    SetRxRfBandwidth { bw_hz: i64 },
-    SetRxWaterfallScale { min_db: f32, max_db: f32 },
-    SetRxWaterfallFftSize { size: usize },
+    SetRxFrequency {
+        hz: u64,
+    },
+    SetRxCenterFrequency {
+        hz: u64,
+    },
+    /// `seq` is a client-chosen sequence number echoed back as `request_id` in the `Config` that reports this span change applied, so the client can match request to acknowledgement.
+    SetRxSpan {
+        center_hz: u64,
+        span_hz: u64,
+        #[serde(default)]
+        request_id: u64,
+    },
+    SetRxAudioEnabled {
+        enabled: bool,
+    },
+    SetRxDemodulation {
+        mode: String,
+        filter_bw_hz: f32,
+    },
+    SetRxWaterfallInterval {
+        ms: u64,
+    },
+    SetRxAntenna {
+        antenna: u8,
+    },
+    SetTxState {
+        active: bool,
+        tx_gain_db: f64,
+    },
+    SetTxModulation {
+        mode: String,
+        filter_bw_hz: f32,
+    },
+    SetTxOffset {
+        hz: i64,
+    },
+    SetRxGainMode {
+        mode: String,
+    },
+    SetRxGain {
+        db: f64,
+    },
+    SetTxGain {
+        db: f64,
+    },
+    SetRxRfBandwidth {
+        bw_hz: i64,
+    },
+    SetRxWaterfallScale {
+        min_db: f32,
+        max_db: f32,
+    },
+    SetRxWaterfallFftSize {
+        size: usize,
+    },
     /// Toggle the optional raw I/Q stream (binary header type 3). Off by default; intended for
     /// alternative frontends that run their own DSP on the wideband capture.
-    SetRxIqStream { enabled: bool },
+    SetRxIqStream {
+        enabled: bool,
+    },
     RequestSync,
 }
 
@@ -40,17 +99,24 @@ pub enum ServerMessage {
     Status {
         state: String,
     },
-    /// Reports the actual hardware operating point after a (re)tune. Every field is a device readback
+    /// Reports the actual hardware operating point after a (re)tune
     Config {
         lo_hz: i64,
         sample_rate_hz: i64,
         min_span_hz: i64,
         rf_bandwidth_hz: i64,
+        /// Seq of the last completed SetRxSpan (0 before the first).
+        request_id: u64,
+        audio_sample_rate_hz: u32,
     },
     Telemetry {
         temp_c: f32,
         vccint_v: f32,
         vccoddr_v: f32,
+    },
+    RxGain {
+        gain_db: f64,
+        mode: String,
     },
     Settings {
         playback_hz: i64,
@@ -64,6 +130,7 @@ pub enum ServerMessage {
         waterfall_min_db: f32,
         waterfall_max_db: f32,
         waterfall_fft_size: usize,
+        antenna: u8,
     },
 }
 
@@ -200,6 +267,19 @@ fn static_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("static"))
 }
 
+/// Sends one framed binary message (see `msg_header` for the layout). Returns false when the
+/// socket is gone and the caller should tear the connection down.
+async fn send_framed(
+    ws_tx: &mut SplitSink<WebSocket, Message>,
+    frame_type: u8,
+    payload: &[u8],
+) -> bool {
+    let mut bin = Vec::with_capacity(msg_header::HEADER_BYTES + payload.len());
+    bin.extend_from_slice(&[frame_type, 0, 0, 0]);
+    bin.extend_from_slice(payload);
+    ws_tx.send(Message::binary(bin)).await.is_ok()
+}
+
 async fn handle_ws_connection(
     ws: WebSocket,
     control_tx: mpsc::UnboundedSender<ControlCommand>,
@@ -235,12 +315,10 @@ async fn handle_ws_connection(
                     Some(Ok(message)) => {
                         if message.is_binary() {
                             let bytes = message.as_bytes();
-                            if bytes.len() >= 4 {
-                                let mut header_bytes = [0u8; 4];
-                                header_bytes.copy_from_slice(&bytes[0..4]);
-                                let header = u32::from_le_bytes(header_bytes);
-                                if header == 2 {
-                                    let payload = &bytes[4..];
+                            if bytes.len() >= msg_header::HEADER_BYTES {
+                                let header = bytes[0];
+                                if header == msg_header::TX_AUDIO {
+                                    let payload = &bytes[msg_header::HEADER_BYTES..];
                                     if payload.len() % 4 == 0 {
                                         let num_samples = payload.len() / 4;
                                         let mut pcm = Vec::with_capacity(num_samples);
@@ -289,10 +367,7 @@ async fn handle_ws_connection(
             waterfall = rx_waterfall_sub.recv() => {
                 match waterfall {
                     Ok(values) => {
-                        let mut bin = Vec::with_capacity(4 + values.len());
-                        bin.extend_from_slice(&[0u8, 0, 0, 0]); // 4-byte header (type 0)
-                        bin.extend_from_slice(&values);
-                        if ws_tx.send(Message::binary(bin)).await.is_err() {
+                        if !send_framed(&mut ws_tx, msg_header::WATERFALL, &values).await {
                             break;
                         }
                     }
@@ -307,12 +382,11 @@ async fn handle_ws_connection(
             audio = rx_audio_sub.recv() => {
                 match audio {
                     Ok(pcm) => {
-                        let mut bin = Vec::with_capacity(4 + pcm.len() * 4);
-                        bin.extend_from_slice(&[1u8, 0, 0, 0]); // 4-byte header (type 1)
+                        let mut payload = Vec::with_capacity(pcm.len() * 4);
                         for sample in pcm {
-                            bin.extend_from_slice(&sample.to_le_bytes());
+                            payload.extend_from_slice(&sample.to_le_bytes());
                         }
-                        if ws_tx.send(Message::binary(bin)).await.is_err() {
+                        if !send_framed(&mut ws_tx, msg_header::AUDIO, &payload).await {
                             break;
                         }
                     }
@@ -327,11 +401,8 @@ async fn handle_ws_connection(
             iq = rx_iq_stream_sub.recv() => {
                 match iq {
                     Ok(samples) => {
-                        // `samples` is already interleaved i16 LE I/Q; prepend the 4-byte header (type 3).
-                        let mut bin = Vec::with_capacity(4 + samples.len());
-                        bin.extend_from_slice(&[3u8, 0, 0, 0]);
-                        bin.extend_from_slice(&samples);
-                        if ws_tx.send(Message::binary(bin)).await.is_err() {
+                        // `samples` is already interleaved i16 LE I/Q.
+                        if !send_framed(&mut ws_tx, msg_header::IQ, &samples).await {
                             break;
                         }
                     }
@@ -361,6 +432,12 @@ async fn handle_ws_connection(
             }
         }
     }
+
+    // Client gone: force TX off so a dropped connection mid-transmission can't leave the radio keyed on air with nobody feeding it audio.
+    let _ = control_tx.send(ControlCommand::SetTxState {
+        active: false,
+        tx_gain_db: crate::MIN_TX_GAIN_DB,
+    });
 }
 
 async fn handle_rejection(err: Rejection) -> Result<warp::reply::Response, Infallible> {

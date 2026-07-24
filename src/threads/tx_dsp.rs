@@ -74,7 +74,7 @@ impl TxJitterBuffer {
         }
     }
 
-    /// Resturns Drift nudge: 
+    /// Resturns Drift nudge:
     /// +1 to consume one extra sample this block,
     /// -1 to consume one fewer
     /// 0 inside the deadband.
@@ -165,6 +165,9 @@ pub fn spawn_tx_dsp_thread(
 
         let mut jitter = TxJitterBuffer::new();
         let silence_block = vec![0.0f32; BLOCK];
+        // Reused modulator output scratch for the resampling path
+        let mut mod_scratch: (Vec<i16>, Vec<i16>) =
+            (Vec::with_capacity(BLOCK), Vec::with_capacity(BLOCK));
         let mut tx_block_count = 0u64;
         // When TX is deactivated, we drain the remaining buffered audio before resetting.
         let mut draining = false;
@@ -257,7 +260,13 @@ pub fn spawn_tx_dsp_thread(
                     }
                     continue;
                 }
-                if !modulate_and_send(&mut modulator, &mut resampler, &silence_block, &iq_tx) {
+                if !modulate_and_send(
+                    &mut modulator,
+                    &mut resampler,
+                    &mut mod_scratch,
+                    &silence_block,
+                    &iq_tx,
+                ) {
                     break;
                 }
                 continue;
@@ -275,7 +284,7 @@ pub fn spawn_tx_dsp_thread(
                         jitter.buf.len() / 48
                     );
                 } else {
-                    // Track how long we've been waiting with a non-empty buffer that isn't growing. 
+                    // Track how long we've been waiting with a non-empty buffer that isn't growing.
                     // After 250ms of silence (SILENCE_PARK samples) force a partial prime so the buffered audio isn't stranded forever.
                     jitter.prime_wait_samples += BLOCK;
                     if jitter.prime_wait_samples >= SILENCE_PARK && !jitter.buf.is_empty() {
@@ -287,7 +296,13 @@ pub fn spawn_tx_dsp_thread(
                             jitter.buf.len() / 48
                         );
                     } else {
-                        if !modulate_and_send(&mut modulator, &mut resampler, &silence_block, &iq_tx) {
+                        if !modulate_and_send(
+                            &mut modulator,
+                            &mut resampler,
+                            &mut mod_scratch,
+                            &silence_block,
+                            &iq_tx,
+                        ) {
                             break;
                         }
                         continue;
@@ -298,7 +313,13 @@ pub fn spawn_tx_dsp_thread(
             // Primed with audio available: emit one block, drift-nudged toward the target depth.
             let nudge = jitter.nudge();
             let block = jitter.output_block(nudge);
-            if !modulate_and_send(&mut modulator, &mut resampler, &block, &iq_tx) {
+            if !modulate_and_send(
+                &mut modulator,
+                &mut resampler,
+                &mut mod_scratch,
+                &block,
+                &iq_tx,
+            ) {
                 break;
             }
 
@@ -319,24 +340,32 @@ pub fn spawn_tx_dsp_thread(
 }
 
 /// Modulates one audio chunk to SSB IQ, optionally upsamples it to the DMA feed rate,
-/// and sends it to the TX IO thread. Returns false if the channel is disconnected, signalling the caller to break out of its loop.
+/// and sends it to the TX IO thread. Returns false if the channel is disconnected, signalling the
+/// caller to break out of its loop. `mod_scratch` holds the reused modulator output buffers for
+/// the resampling path; the vectors sent down the channel are freshly allocated because the
+/// receiver takes ownership.
 fn modulate_and_send(
     modulator: &mut TxModulator,
     resampler: &mut Option<IqResampler>,
+    mod_scratch: &mut (Vec<i16>, Vec<i16>),
     chunk: &[f32],
     iq_tx: &SyncSender<(Vec<i16>, Vec<i16>)>,
 ) -> bool {
-    let mut mi = Vec::with_capacity(chunk.len());
-    let mut mq = Vec::with_capacity(chunk.len());
-    modulator.process_chunk(chunk, &mut mi, &mut mq);
     let result = match resampler.as_mut() {
         Some(r) => {
+            let (mi, mq) = mod_scratch;
+            mi.clear();
+            mq.clear();
+            modulator.process_chunk(chunk, mi, mq);
             let mut ui = Vec::with_capacity(chunk.len() * 3 + 8);
             let mut uq = Vec::with_capacity(chunk.len() * 3 + 8);
-            r.process(&mi, &mq, &mut ui, &mut uq);
+            r.process(mi, mq, &mut ui, &mut uq);
             iq_tx.send((ui, uq))
         }
         None => {
+            let mut mi = Vec::with_capacity(chunk.len());
+            let mut mq = Vec::with_capacity(chunk.len());
+            modulator.process_chunk(chunk, &mut mi, &mut mq);
             iq_tx.send((mi, mq))
         }
     };

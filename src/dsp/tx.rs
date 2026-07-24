@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 /// Audio sample rate the SSB modulator operates at (and the rate the network delivers audio).
-const MOD_FS: u32 = 48_000;
+const MOD_FS: u32 = crate::AUDIO_SAMPLE_RATE;
 
 /// TX audio low-cut (Hz). The TX analytic FIR passband starts here instead of at DC, so sub-300 Hz
 /// content (mic rumble, handling noise, music bass) can't pile onto the suppressed carrier or leak
@@ -40,8 +40,11 @@ pub struct IqResampler {
     m: usize,
     taps_per_phase: usize,
     poly: Vec<Vec<f32>>, // poly[phase][k] = prototype[phase + k*L]
-    hist_i: Vec<f32>,    // last taps_per_phase inputs, newest last
+    // Double-length history rings (newest last): each input is written at `hist_idx` and `hist_idx + taps_per_phase`,
+    // so the last taps_per_phase inputs are always one contiguous chronological slice starting at `hist_idx`.
+    hist_i: Vec<f32>,
     hist_q: Vec<f32>,
+    hist_idx: usize,
     phase: usize,
 }
 
@@ -90,28 +93,23 @@ impl IqResampler {
             m,
             taps_per_phase,
             poly,
-            hist_i: vec![0.0; taps_per_phase],
-            hist_q: vec![0.0; taps_per_phase],
+            hist_i: vec![0.0; taps_per_phase * 2],
+            hist_q: vec![0.0; taps_per_phase * 2],
+            hist_idx: 0,
             phase: 0,
         })
-    }
-
-    #[inline]
-    fn push(hist: &mut [f32], x: f32) {
-        // Shift newest-last; small fixed length, cheap.
-        let n = hist.len();
-        hist.copy_within(1..n, 0);
-        hist[n - 1] = x;
     }
 
     #[inline]
     fn branch(&self, p: usize, hist: &[f32]) -> f32 {
         let k = self.taps_per_phase;
         let coeffs = &self.poly[p];
+        // Contiguous chronological window of the last k inputs (see the hist_i field comment).
+        let window = &hist[self.hist_idx..self.hist_idx + k];
         let mut acc = 0.0f32;
         for t in 0..k {
-            // tap t multiplies the t-th most recent input = hist[k-1-t]
-            acc += coeffs[t] * hist[k - 1 - t];
+            // tap t multiplies the t-th most recent input = window[k-1-t]
+            acc += coeffs[t] * window[k - 1 - t];
         }
         acc
     }
@@ -125,9 +123,19 @@ impl IqResampler {
         out_q: &mut Vec<i16>,
     ) {
         let n = in_i.len().min(in_q.len());
+        let k = self.taps_per_phase;
         for idx in 0..n {
-            Self::push(&mut self.hist_i, in_i[idx] as f32);
-            Self::push(&mut self.hist_q, in_q[idx] as f32);
+            // Write each input twice so the convolution window stays contiguous.
+            let xi = in_i[idx] as f32;
+            let xq = in_q[idx] as f32;
+            self.hist_i[self.hist_idx] = xi;
+            self.hist_i[self.hist_idx + k] = xi;
+            self.hist_q[self.hist_idx] = xq;
+            self.hist_q[self.hist_idx + k] = xq;
+            self.hist_idx += 1;
+            if self.hist_idx >= k {
+                self.hist_idx = 0;
+            }
             while self.phase < self.l {
                 let yi = self.branch(self.phase, &self.hist_i);
                 let yq = self.branch(self.phase, &self.hist_q);
@@ -157,8 +165,8 @@ pub struct TxModulator {
 
 impl TxModulator {
     pub fn new(mode: TxMode, filter_bw: f32, tx_fs: f32) -> Self {
-        let actual_mod_fs = 48_000.0f32;
-        let clamped_bw = filter_bw.clamp(1000.0, 20_000.0);
+        let actual_mod_fs = MOD_FS as f32;
+        let clamped_bw = filter_bw.clamp(crate::FILTER_BW_MIN_HZ, 20_000.0);
         let is_usb = mode == TxMode::USB;
 
         // Complex analytic band-pass FIR: carrier-suppressed by construction, -83 dBc opposite

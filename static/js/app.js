@@ -1,8 +1,9 @@
 import { formatFrequency, formatHzToMhz, formatHzToMhzPrecise, formatHzShort } from './format.js';
-import { playAudioChunk, initAudioUI } from './audio.js';
-import { initTx, syncTxToRx, applyConnectionState } from './tx.js';
+import { playAudioChunk, initAudioUI, setAudioSampleRate, applyServerAudioState } from './audio.js';
+import { initTx, syncTxToRx, applyConnectionState, reassertTxState, setTxAudioSampleRate } from './tx.js';
+import { FRAME_TYPE, HEADER_BYTES } from './framing.js';
 
-export { sendCommand, sendBinary, updateStatusBar };
+export { sendCommand, sendBinary, updateStatusBar, clampFilterBw, clampTxFilterBw };
 
 // --- DOM Element Declarations ---
 const runStatusToggle = document.getElementById('run-status-toggle');
@@ -22,9 +23,6 @@ const antennaSelect = document.getElementById('antenna-select');
 const muteCheckbox = document.getElementById('mute-checkbox');
 const hoverTooltip = document.getElementById('hover-tooltip');
 
-// TX Mode/Bandwidth selectors (read by the status bar; controls live in tx.js)
-const txModeSelect = document.getElementById('tx-mode-select');
-const txFilterBwInput = document.getElementById('tx-filter-bw');
 const txOffsetInput = document.getElementById('tx-offset');
 
 const rxGainModeSelect = document.getElementById('rx-gain-mode');
@@ -55,9 +53,12 @@ const resolutionEl = document.getElementById('resolution-val');
 
 const txStatusLoVal = document.getElementById('tx-status-lo-val');
 
-// --- Global Application State ---
+// --- Global Application State & Constants ---
+const WF_SCALE_DEFAULTS = { min_db: -100.0, max_db: -40.0 };
+
 let isRunning = true; // Matches the backend's default running state on connect
 let cachedRowData = null;
+let cachedFullImageData = null;
 const rowHistory = [];
 let ws = null;
 let wsReconnectTimer = null;
@@ -68,57 +69,20 @@ let hardwareLoHz = 99300000;            // Target hardware LO frequency
 let sdrHardwareLoHz = hardwareLoHz;      // Current streaming hardware LO frequency
 let sdrBandwidthHz = currentBandwidthHz;  // Current streaming sample rate/bandwidth
 let minHardwareSpanHz = 3840000;         // Minimum supported hardware span for streaming audio
-// Analog RX filter setpoint while "Sync" is off. The radio re-slaves the filter to the span on
-// every span change, so holding a value is our job: we re-send this whenever the span moves. Null while synced.
 let manualRfBwHz = null;
 let isConfigInitialized = false;
 const axisHeight = 30;                   // Height of the frequency scale axis (CSS pixels)
-// Scales the canvas backing buffer to the display's true resolution (capped at 2x) to avoid blur.
 let dpr = Math.min(window.devicePixelRatio || 1, 2);
-function axisHeightPx() { return Math.round(axisHeight * dpr); }  // axisHeight in backing-buffer pixels, for the waterfall region math.
-function rowStepPx() { return Math.max(1, Math.round(dpr)); }     // Backing-buffer pixels per waterfall row
+function axisHeightPx() { return Math.round(axisHeight * dpr); }
+function rowStepPx() { return Math.max(1, Math.round(dpr)); }
 
 let isWaitingForHardware = false;        // Blocks rendering during tuning to avoid buffer corruption
 let awaitingFirstRow = false;            // After Config: still dropping settling frames until real signal
 let settleFallbackTimer = null;          // Safety valve: force-resume if no valid row ever arrives
 
-// A settling burst reads as an all-near-zero row (solid blue band); real spectrum sits above 0.
-function isEmptyRow(row) {
-  for (let i = 0; i < row.length; i++) {
-    if (row[i] > 2) return false;
-  }
-  return true;
-}
-
-// Force rendering to resume after `ms`, so a failed/silent reconfig can't freeze the waterfall.
-function armSettleFallback(ms) {
-  if (settleFallbackTimer) clearTimeout(settleFallbackTimer);
-  settleFallbackTimer = setTimeout(() => {
-    isWaitingForHardware = false;
-    awaitingFirstRow = false;
-    settleFallbackTimer = null;
-  }, ms);
-}
-
-// Demodulator Settings
-let currentMode = 'FM';
-let currentFilterBw = 15000;
-
 // TX DDS offset: the TX LO sits this far below the listening frequency; the FPGA DDS shifts
 // the signal back up. Keeps TX LO leakage (carrier spike) away from the transmitted signal.
-let txOffsetHz = 50000;
-
-// Largest usable TX offset at the current rate: the TX sample rate follows the RX hardware
-// span and the analog TX bandwidth equals that rate, so the shifted signal must stay within
-// +-fs/2 (20 kHz margin covers the widest TX filter). Mirrors max_tx_offset() in the backend.
-function maxTxOffsetHz() {
-  return sdrBandwidthHz / 2 - 20000;
-}
-
-function clampTxOffset(hz) {
-  const limit = maxTxOffsetHz();
-  return Math.max(-limit, Math.min(limit, hz));
-}
+let txOffsetHz = 1000000;
 
 // Dragging Interactions
 let isDragging = false;
@@ -132,30 +96,158 @@ let filterBwTimeout = null;
 // Zoom & Keyboard Panning
 let keyboardPanTimeout = null;
 let zoomTimeout = null;
-// Serialize span reconfigs (one in flight): rapid zooming would otherwise queue many slow AD9361
-// retunes. Later zooms just flag a resend; the latest view is sent when the current one is acked.
 let spanReconfigInFlight = false;
 let spanReconfigQueued = false;
 let spanReconfigTimer = null;
-// Track the span/LO we last requested so Config acks from unrelated commands
-// (demod changes, antenna, etc.) don't falsely release the in-flight lock.
-let spanReconfigExpectedSpanHz = null;
-let spanReconfigExpectedLoHz = null;
+let spanRequestIdCounter = 0;
+let spanReconfigExpectedRequestId = null;
 const ZOOM_STEPS = [
   12500, 25000, 50000, 100000, 250000, 500000, 720000, 960000,
   1200000, 1440000, 1680000, 1920000, 2160000, 2400000, 3000000,
   3600000, 4800000, 6000000, 8000000, 10000000, 15000000, 20000000, 30000000
 ];
 
-// --- Helper & Formatting Functions ---
+// Re-render coalescing using requestAnimationFrame
+let redrawPending = false;
+function requestRedraw() {
+  if (redrawPending) return;
+  redrawPending = true;
+  requestAnimationFrame(() => {
+    redrawPending = false;
+    redrawWaterfallFromHistory();
+  });
+}
 
-// Updates connection state labels
+const MIN_LO_HZ = 70000000;
+const MAX_LO_HZ = 6000000000;
+
+function isValidLoHz(hz) {
+  return typeof hz === 'number' && !Number.isNaN(hz) && hz >= MIN_LO_HZ && hz <= MAX_LO_HZ;
+}
+
+function isEmptyRow(row) {
+  for (let i = 0; i < row.length; i++) {
+    if (row[i] > 2) return false;
+  }
+  return true;
+}
+
+function armSettleFallback(ms = 500) {
+  if (settleFallbackTimer) clearTimeout(settleFallbackTimer);
+  settleFallbackTimer = setTimeout(() => {
+    isWaitingForHardware = false;
+    awaitingFirstRow = false;
+    settleFallbackTimer = null;
+  }, ms);
+}
+
+function clampListeningHz(hz, loHz = sdrHardwareLoHz, spanHz = sdrBandwidthHz) {
+  const margin = 1000;
+  const minFreq = loHz - spanHz / 2 + margin;
+  const maxFreq = loHz + spanHz / 2 - margin;
+  return Math.max(minFreq, Math.min(maxFreq, hz));
+}
+
+function desiredHardwareLo(currentCenterHz, currentBandwidthHz, sdrBandwidthHz, listeningHz) {
+  const halfVis = currentBandwidthHz / 2;
+  const halfSdr = sdrBandwidthHz / 2;
+  const margin = 1000;
+  let minLo = currentCenterHz + halfVis + margin - halfSdr;
+  let maxLo = currentCenterHz - halfVis - margin + halfSdr;
+
+  if (!Number.isNaN(listeningHz)) {
+    minLo = Math.max(minLo, listeningHz + margin - halfSdr);
+    maxLo = Math.min(maxLo, listeningHz - margin + halfSdr);
+  }
+
+  if (minLo > maxLo) {
+    return Math.round((minLo + maxLo) / 2);
+  }
+  return Math.round(Math.max(minLo, Math.min(maxLo, sdrHardwareLoHz)));
+}
+
+function filterBandEdges(listeningHz) {
+  const mode = modeSelect ? modeSelect.value : 'FM';
+  const filterBw = (filterBwInput ? parseInt(filterBwInput.value, 10) : 15000) || 15000;
+  if (mode === 'FM') {
+    return [listeningHz - filterBw / 2, listeningHz + filterBw / 2];
+  } else if (mode === 'USB') {
+    return [listeningHz, listeningHz + filterBw];
+  } else if (mode === 'LSB') {
+    return [listeningHz - filterBw, listeningHz];
+  }
+  return null;
+}
+
+function clampTxOffset(hz) {
+  const limit = sdrBandwidthHz / 2 - 20000;
+  return Math.max(-limit, Math.min(limit, hz));
+}
+
+function clampFilterBw(bw) {
+  const mode = modeSelect ? modeSelect.value : 'FM';
+  const maxBw = (mode === 'USB' || mode === 'LSB') ? 20000 : 110000;
+  return Math.max(1000, Math.min(maxBw, bw));
+}
+
+function clampTxFilterBw(bw) {
+  return Math.max(1000, Math.min(20000, bw));
+}
+
+function hzToX(hz, startHz, bwHz, width) {
+  return Math.round(((hz - startHz) / bwHz) * width);
+}
+
+function computeOverlayColumns(startHz, bwHz, width, listeningHz) {
+  let listenX = -1;
+  let boxStartX = -1;
+  let boxEndX = -1;
+  if (!Number.isNaN(listeningHz) && listeningHz >= startHz && listeningHz <= startHz + bwHz) {
+    listenX = hzToX(listeningHz, startHz, bwHz, width);
+    const edges = filterBandEdges(listeningHz);
+    if (edges) {
+      boxStartX = hzToX(edges[0], startHz, bwHz, width);
+      boxEndX = hzToX(edges[1], startHz, bwHz, width);
+    }
+  }
+  return { listenX, boxStartX, boxEndX };
+}
+
+function hitTestBar(x, y, rect, listeningHz, startHz, bwHz) {
+  const mode = modeSelect ? modeSelect.value : 'FM';
+  const isInAxis = y >= (rect.height - axisHeight);
+
+  if (!Number.isNaN(listeningHz)) {
+    const listenClientX = ((listeningHz - startHz) / bwHz) * rect.width;
+    if (Math.abs(x - listenClientX) <= 6) return 'carrier';
+
+    const edges = filterBandEdges(listeningHz);
+    if (edges) {
+      const [boxStartHz, boxEndHz] = edges;
+      const startClientX = ((boxStartHz - startHz) / bwHz) * rect.width;
+      const endClientX = ((boxEndHz - startHz) / bwHz) * rect.width;
+
+      if ((mode === 'FM' || mode === 'LSB') && Math.abs(x - startClientX) <= 6) return 'left';
+      if ((mode === 'FM' || mode === 'USB') && Math.abs(x - endClientX) <= 6) return 'right';
+    }
+
+    const txLoHz = listeningHz - txOffsetHz;
+    const txLoX = ((txLoHz - startHz) / bwHz) * rect.width;
+    if (isInAxis && Math.abs(x - txLoX) <= 6) return 'txlo';
+  }
+
+  const sdrCenterX = ((hardwareLoHz - startHz) / bwHz) * rect.width;
+  if (isInAxis && Math.abs(x - sdrCenterX) <= 6) return 'lo';
+
+  return null;
+}
+
+// --- Helper & Formatting Functions ---
 function updateStatus(text) {
   statusLabel.textContent = text;
   statusLabel.style.color = text === 'connected' ? '#00FF00' : 'red';
 }
 
-// Reflects isRunning in the toggleable Started/Stopped badge
 function updateRunStatusBadge() {
   if (!runStatusToggle) return;
   runStatusToggle.textContent = isRunning ? 'Started' : 'Stopped';
@@ -163,7 +255,6 @@ function updateRunStatusBadge() {
   runStatusToggle.classList.toggle('is-stopped', !isRunning);
 }
 
-// Redraws the status details bar with active settings and zoom state
 function updateStatusBar() {
   if (!zoomStatusEl) return;
 
@@ -180,7 +271,8 @@ function updateStatusBar() {
   loFreqEl.textContent = formatHzToMhzPrecise(sdrHardwareLoHz, 6);
 
   if (resolutionEl) {
-    const fftSize = (rowHistory.length > 0 && rowHistory[0].row) ? rowHistory[0].row.length : 8192;
+    const fftSize = (waterfallFftSizeSelect && parseInt(waterfallFftSizeSelect.value, 10)) ||
+      ((rowHistory.length > 0 && rowHistory[0].row) ? rowHistory[0].row.length : 8192);
     const fftRes = sdrBandwidthHz / fftSize;
     const zoomFactor = 30000000 / currentBandwidthHz;
 
@@ -192,23 +284,17 @@ function updateStatusBar() {
     resolutionEl.textContent = `${zoomFactor.toFixed(1)}x (${detailRating}, ${formatHzShort(fftRes)})`;
   }
 
-  // Update TX Status Bar elements
   const listeningHz = parseInt(frequencyInput.value, 10);
   if (txStatusLoVal && !Number.isNaN(listeningHz)) {
-    // TX LO hardware sits txOffsetHz below playback_hz; the FPGA TX DDS brings the signal
-    // back up to playback_hz.
-    const txLoMhz = (listeningHz - txOffsetHz) / 1000000;
-    txStatusLoVal.textContent = txLoMhz.toFixed(6) + ' MHz';
+    txStatusLoVal.textContent = formatHzToMhzPrecise(listeningHz - txOffsetHz, 6);
   }
 }
 
-// Enables/disables controls based on connection state
 function updatePlaybackAbility() {
   runStatusToggle.disabled = !window.isConnected;
   setFreqButton.disabled = !window.isConnected;
 
   if (muteCheckbox) muteCheckbox.disabled = !window.isConnected;
-  
   if (rxGainModeSelect) rxGainModeSelect.disabled = !window.isConnected;
   if (rxGainSlider) {
     rxGainSlider.disabled = !window.isConnected || (rxGainModeSelect && rxGainModeSelect.value !== 'manual');
@@ -225,18 +311,16 @@ function updatePlaybackAbility() {
   applyConnectionState(window.isConnected);
 }
 
-// Caches connection state and updates status bar
 function setConnected(isConnected) {
   window.isConnected = isConnected;
   if (isConnected) {
-    isRunning = true; // Backend starts running by default on connect
+    isRunning = true;
     updateRunStatusBadge();
   }
   updatePlaybackAbility();
   updateStatus(isConnected ? 'connected' : 'disconnected');
 }
 
-// Sends current waterfall DB scaling configuration to the backend
 function updateWaterfallScale() {
   if (!wfMinDbSlider || !wfMaxDbSlider) return;
   const min_db = parseFloat(wfMinDbSlider.value);
@@ -248,8 +332,6 @@ function updateWaterfallScale() {
 }
 
 // --- WebSocket Connection & Communication ---
-
-// Sends a JSON command to the backend
 function sendCommand(command) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     console.warn('WebSocket not open');
@@ -259,36 +341,40 @@ function sendCommand(command) {
   ws.send(JSON.stringify(command));
 }
 
-// Sends raw binary (used by TX)
 function sendBinary(buffer) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
   ws.send(buffer);
   return true;
 }
 
-// Handles raw binary data from WebSocket (waterfall lines and audio PCM)
-function handleBinaryMessage(arrayBuffer) {
-  const view = new DataView(arrayBuffer);
-  const header = view.getUint8(0);
-  
-  if (header === 0) {
-    // Waterfall row
-    const values = new Uint8Array(arrayBuffer, 4);
-    appendWaterfallRow(values);
-  } else if (header === 1) {
-    // Audio PCM chunk
-    if (arrayBuffer.byteLength < 8) {
-      console.warn("Received malformed audio chunk with byte length:", arrayBuffer.byteLength);
+const BINARY_HANDLERS = {
+  [FRAME_TYPE.WATERFALL]: (frame) => {
+    appendWaterfallRow(new Uint8Array(frame, HEADER_BYTES));
+  },
+  [FRAME_TYPE.AUDIO]: (frame) => {
+    if (frame.byteLength < HEADER_BYTES + 4) {
+      console.warn("Received malformed audio chunk with byte length:", frame.byteLength);
       return;
     }
-    const pcm = new Float32Array(arrayBuffer, 4);
-    playAudioChunk(pcm);
-  } else {
-    console.warn("Unknown binary message header:", header);
+    playAudioChunk(new Float32Array(frame, HEADER_BYTES));
+  },
+  [FRAME_TYPE.IQ]: () => {},
+};
+
+function handleBinaryMessage(arrayBuffer) {
+  if (arrayBuffer.byteLength < HEADER_BYTES) {
+    console.warn("Received truncated binary frame of", arrayBuffer.byteLength, "bytes");
+    return;
   }
+  const type = new DataView(arrayBuffer).getUint8(0);
+  const handler = BINARY_HANDLERS[type];
+  if (!handler) {
+    console.warn("Unknown binary frame type:", type);
+    return;
+  }
+  handler(arrayBuffer);
 }
 
-// Handles structured text configuration/status/telemetry from WebSocket
 function handleTextMessage(data) {
   if (data.type === 'Status') {
     updateStatus(data.payload.state);
@@ -298,10 +384,11 @@ function handleTextMessage(data) {
     handleSettingsUpdate(data.payload);
   } else if (data.type === 'Telemetry') {
     handleTelemetryUpdate(data.payload);
+  } else if (data.type === 'RxGain') {
+    handleRxGainUpdate(data.payload);
   }
 }
 
-// Sub-handler for Config updates
 function handleConfigUpdate(payload) {
   const prevSampleRateHz = sdrBandwidthHz;
   sdrHardwareLoHz = payload.lo_hz;
@@ -312,7 +399,11 @@ function handleConfigUpdate(payload) {
     minHardwareSpanHz = payload.min_span_hz;
   }
 
-  // Mirror the backend: a shrunken hardware rate re-clamps the TX offset.
+  if (payload.audio_sample_rate_hz) {
+    setAudioSampleRate(payload.audio_sample_rate_hz);
+    setTxAudioSampleRate(payload.audio_sample_rate_hz);
+  }
+
   const clampedTxOffset = clampTxOffset(txOffsetHz);
   if (clampedTxOffset !== txOffsetHz) {
     txOffsetHz = clampedTxOffset;
@@ -323,8 +414,6 @@ function handleConfigUpdate(payload) {
     currentBandwidthHz = sdrBandwidthHz;
   }
 
-  // The analog bandwidth is a hardware readback: display it verbatim, skipping the write while
-  // the field has focus so an unrelated retune can't eat what's being typed.
   if (rfBandwidthInput && payload.rf_bandwidth_hz !== undefined &&
       document.activeElement !== rfBandwidthInput) {
     rfBandwidthInput.value = payload.rf_bandwidth_hz;
@@ -341,28 +430,20 @@ function handleConfigUpdate(payload) {
     currentCenterHz = sdrHardwareLoHz;
     centerFreqInput.value = Math.round(currentCenterHz);
 
-    // Adopt whatever the radio is already doing. A filter that isn't sitting exactly on the span
-    // is a manual bandwidth an earlier session left behind, so come up un-synced and hold it
-    if (payload.rf_bandwidth_hz !== undefined &&
-        payload.rf_bandwidth_hz !== sdrBandwidthHz) {
+    if (payload.rf_bandwidth_hz !== undefined && payload.rf_bandwidth_hz !== sdrBandwidthHz) {
       manualRfBwHz = payload.rf_bandwidth_hz;
       if (syncRfBwCheckbox) syncRfBwCheckbox.checked = false;
     }
   }
 
-  redrawWaterfallFromHistory();
+  requestRedraw();
 
-  // Span reconfig acknowledged: release the lock and, if the user kept zooming, send one more
-  // SetRxSpan for the latest view (coalescing into a single final retune).
-  // Only release if this Config actually matches the span we requested. Otherwise it's an
-  // unrelated Config (demod change, antenna, etc.) and the span retune is still pending.
+  // Span reconfig acknowledged: release the lock and, if the user kept zooming, send one more SetRxSpan for the latest view
   if (spanReconfigInFlight &&
-      spanReconfigExpectedSpanHz !== null &&
-      sdrBandwidthHz === spanReconfigExpectedSpanHz &&
-      Math.abs(sdrHardwareLoHz - spanReconfigExpectedLoHz) < 100) {
+      spanReconfigExpectedRequestId !== null &&
+      payload.request_id >= spanReconfigExpectedRequestId) {
     spanReconfigInFlight = false;
-    spanReconfigExpectedSpanHz = null;
-    spanReconfigExpectedLoHz = null;
+    spanReconfigExpectedRequestId = null;
     if (spanReconfigTimer) {
       clearTimeout(spanReconfigTimer);
       spanReconfigTimer = null;
@@ -373,75 +454,64 @@ function handleConfigUpdate(payload) {
     }
   }
 
-  // Retune done, but the first bursts are still settling. Stay gated; appendWaterfallRow
-  // resumes on the first row with real signal.
   if (isWaitingForHardware) {
     awaitingFirstRow = true;
-    armSettleFallback(3000);
+    armSettleFallback(500);
   }
 
   updatePlaybackAbility();
 }
 
-// Sub-handler for Settings updates
 function handleSettingsUpdate(payload) {
   console.log('[WS Settings Update] Received active settings from server:', payload);
-  const newFreq = payload.playback_hz;
-  if (frequencyInput) {
-    frequencyInput.value = newFreq;
+  if (frequencyInput && payload.playback_hz !== undefined) {
+    frequencyInput.value = payload.playback_hz;
   }
 
-  const newMode = payload.demod_mode;
-  currentMode = newMode;
-  if (modeSelect) {
-    modeSelect.value = newMode;
+  if (modeSelect && payload.demod_mode) {
+    modeSelect.value = payload.demod_mode;
   }
 
-  const newFilterBw = payload.filter_bw_hz;
-  currentFilterBw = newFilterBw;
-  if (filterBwInput) {
-    filterBwInput.value = newFilterBw;
+  if (filterBwInput && payload.filter_bw_hz !== undefined) {
+    filterBwInput.value = payload.filter_bw_hz;
   }
   syncTxToRx();
 
-  const audioEnabled = payload.audio_enabled;
-  if (muteCheckbox) {
-    muteCheckbox.checked = !audioEnabled;
+  if (payload.audio_enabled !== undefined) {
+    applyServerAudioState(payload.audio_enabled);
   }
 
-  const intervalMs = payload.waterfall_interval_ms;
-  if (waterfallSpeedSelect) {
-    waterfallSpeedSelect.value = intervalMs;
+  if (waterfallSpeedSelect && payload.waterfall_interval_ms !== undefined) {
+    waterfallSpeedSelect.value = payload.waterfall_interval_ms;
   }
 
-  const fftSize = payload.waterfall_fft_size;
-  if (waterfallFftSizeSelect && fftSize) {
-    waterfallFftSizeSelect.value = fftSize;
+  if (waterfallFftSizeSelect && payload.waterfall_fft_size) {
+    waterfallFftSizeSelect.value = payload.waterfall_fft_size;
   }
 
-  const gainMode = payload.rx_gain_mode;
-  if (rxGainModeSelect) {
-    rxGainModeSelect.value = gainMode;
+  if (antennaSelect && payload.antenna !== undefined) {
+    antennaSelect.value = payload.antenna.toString();
   }
 
-  const gainDb = payload.rx_gain_db;
-  if (rxGainSlider) {
-    rxGainSlider.value = gainDb;
+  if (rxGainModeSelect && payload.rx_gain_mode) {
+    rxGainModeSelect.value = payload.rx_gain_mode;
+  }
+
+  if (rxGainSlider && payload.rx_gain_db !== undefined) {
+    rxGainSlider.value = payload.rx_gain_db;
     if (rxGainVal) {
-      rxGainVal.textContent = gainDb.toFixed(1) + ' dB';
+      rxGainVal.textContent = payload.rx_gain_db.toFixed(1) + ' dB';
     }
-    rxGainSlider.disabled = !window.isConnected || gainMode !== 'manual';
+    rxGainSlider.disabled = !window.isConnected || payload.rx_gain_mode !== 'manual';
   }
 
-  if (payload.tx_offset_hz !== undefined) {
+  if (txOffsetInput && payload.tx_offset_hz !== undefined) {
     txOffsetHz = payload.tx_offset_hz;
-    if (txOffsetInput) {
-      txOffsetInput.value = txOffsetHz;
-    }
+    txOffsetInput.value = txOffsetHz;
   }
 
-  const minDb = payload.waterfall_min_db;
-  const maxDb = payload.waterfall_max_db;
+  const minDb = payload.waterfall_min_db !== undefined ? payload.waterfall_min_db : WF_SCALE_DEFAULTS.min_db;
+  const maxDb = payload.waterfall_max_db !== undefined ? payload.waterfall_max_db : WF_SCALE_DEFAULTS.max_db;
   if (wfMinDbSlider) {
     wfMinDbSlider.value = minDb;
     if (wfMinDbVal) wfMinDbVal.textContent = minDb.toFixed(0) + ' dB';
@@ -451,12 +521,22 @@ function handleSettingsUpdate(payload) {
     if (wfMaxDbVal) wfMaxDbVal.textContent = maxDb.toFixed(0) + ' dB';
   }
 
-  drawAxis(canvas.width / dpr, canvas.height / dpr);
-  redrawWaterfallFromHistory();
+  requestRedraw();
   updatePlaybackAbility();
 }
 
-// Sub-handler for Telemetry updates
+function handleRxGainUpdate(payload) {
+  if (!rxGainSlider || payload.gain_db === undefined) return;
+  // Only reflect AGC's own readback while AGC is actually selected locally, so this doesn't
+  // fight a user who just switched to manual (or a stale message racing the mode switch).
+  if (rxGainModeSelect && rxGainModeSelect.value === 'manual') return;
+
+  rxGainSlider.value = payload.gain_db;
+  if (rxGainVal) {
+    rxGainVal.textContent = payload.gain_db.toFixed(1) + ' dB';
+  }
+}
+
 function handleTelemetryUpdate(payload) {
   const temp = payload.temp_c;
   const vccint = payload.vccint_v;
@@ -481,7 +561,6 @@ function handleTelemetryUpdate(payload) {
   }
 }
 
-// Connects/Reconnects WebSocket connection
 function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
@@ -509,6 +588,7 @@ function connect() {
       wsReconnectTimer = null;
     }
     setConnected(true);
+    reassertTxState();
   });
 
   ws.addEventListener('message', (event) => {
@@ -534,57 +614,25 @@ function connect() {
     if (telemetryTemp) telemetryTemp.textContent = '-- °C';
     if (telemetryVccint) telemetryVccint.textContent = '-- V';
     if (telemetryVccoddr) telemetryVccoddr.textContent = '-- V';
+
+    console.warn('WebSocket closed; scheduling reconnect in 2s');
     setTimeout(connect, 2000);
   });
 
   ws.addEventListener('error', (err) => {
-    console.error("WebSocket error:", err);
-    if (ws && ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
-      ws.close();
-    }
+    console.error('WebSocket error:', err);
+    ws.close();
   });
 }
 
-// --- DSP & Tuning Math Helpers ---
-
-// Returns [lowHz, highHz] limits of the demodulator passband around listeningHz
-function filterBandEdges(listeningHz) {
-  if (Number.isNaN(listeningHz)) return null;
-  if (currentMode === 'FM') return [listeningHz - currentFilterBw / 2, listeningHz + currentFilterBw / 2];
-  if (currentMode === 'USB') return [listeningHz, listeningHz + currentFilterBw];
-  if (currentMode === 'LSB') return [listeningHz - currentFilterBw, listeningHz];
-  return null;
-}
-
-// Clamps listening frequency to the current physical SDR bandwidth limits
-function clampListeningHz(hz) {
-  const halfSpan = sdrBandwidthHz / 2;
-  return Math.max(sdrHardwareLoHz - halfSpan, Math.min(sdrHardwareLoHz + halfSpan, hz));
-}
-
-// Computes the desired hardware LO to center visualBw at centerHz.
-// Offsets the LO to push any potential DC leakage spike outside the visible window.
-function desiredHardwareLo(centerHz, visualBw, hwSpan, listeningHz) {
-  const maxShift = hwSpan * 0.5 - visualBw * 0.5 - hwSpan * 0.02;
-  if (maxShift <= 0) return Math.round(centerHz);
-  const shift = Math.min(visualBw * 0.6, maxShift);
-  const listenerBelowCenter = !Number.isNaN(listeningHz) && listeningHz < centerHz;
-  return Math.round(listenerBelowCenter ? centerHz + shift : centerHz - shift);
-}
-
-// The "SDR Center" box mirrors the hardware LO (the orange marker), not the visual window
-// center. DesiredHardwareLo() offsets the two from each other after any pan or zoom.
 function syncCenterFreqInput() {
   centerFreqInput.value = Math.round(hardwareLoHz);
 }
 
-// Triggers center frequency tuning request if hardware LO needs to be adjusted
 function updateHardwareLo() {
   if (!window.isConnected) return;
 
-  // When zoomed in, panning is often purely visual: if the visible window still fits inside
-  // the current hardware capture window, keep the LO where it is so the AD9361 doesn't need
-  // to retune and the movement stays instantaneous.
+  // When zoomed in, panning is often purely visual
   const margin = sdrBandwidthHz * 0.02;
   const viewStartHz = currentCenterHz - currentBandwidthHz / 2;
   const viewEndHz = currentCenterHz + currentBandwidthHz / 2;
@@ -600,15 +648,22 @@ function updateHardwareLo() {
   const targetLo = desiredHardwareLo(currentCenterHz, currentBandwidthHz, sdrBandwidthHz, listeningHz);
   hardwareLoHz = targetLo;
   syncCenterFreqInput();
+
+  const hwSpan = Math.max(minHardwareSpanHz, currentBandwidthHz);
+  const clampedListening = clampListeningHz(listeningHz, targetLo, hwSpan);
+  if (clampedListening !== listeningHz) {
+    if (frequencyInput) frequencyInput.value = clampedListening;
+    sendCommand({ type: 'SetRxFrequency', payload: { hz: clampedListening } });
+  }
+
   if (Math.round(targetLo) !== Math.round(sdrHardwareLoHz)) {
     isWaitingForHardware = true;
     awaitingFirstRow = false;
-    armSettleFallback(3000);
+    armSettleFallback(500);
     sendCommand({ type: 'SetRxCenterFrequency', payload: { hz: targetLo } });
   }
 }
 
-// Helper to determine the next bandwidth zoom step from ZOOM_STEPS
 function getNextZoomStep(currentBw, zoomOut) {
   let idx = ZOOM_STEPS.indexOf(currentBw);
   if (idx === -1) {
@@ -627,11 +682,9 @@ function getNextZoomStep(currentBw, zoomOut) {
 
 // Debounces physical SDR span updates to the backend
 function scheduleRxSpanUpdate() {
-  // Freeze rendering right away: rows still arriving were captured at the old span/LO and would
-  // render misaligned against the new view. Resumes on the first valid row after Config.
   isWaitingForHardware = true;
   awaitingFirstRow = false;
-  armSettleFallback(3000);
+  armSettleFallback(500);
   if (zoomTimeout) clearTimeout(zoomTimeout);
   zoomTimeout = setTimeout(() => {
     zoomTimeout = null;
@@ -639,8 +692,6 @@ function scheduleRxSpanUpdate() {
   }, 250);
 }
 
-// Sends one SetRxSpan, honouring the single-in-flight rule: if a reconfig is already pending the
-// request is deferred and re-issued on the next Config. The timer guards against a dropped Config.
 function sendSpanUpdate() {
   if (spanReconfigInFlight) {
     spanReconfigQueued = true;
@@ -651,17 +702,20 @@ function sendSpanUpdate() {
   if (spanReconfigTimer) clearTimeout(spanReconfigTimer);
   spanReconfigTimer = setTimeout(() => {
     spanReconfigInFlight = false;
-    spanReconfigExpectedSpanHz = null;
-    spanReconfigExpectedLoHz = null;
+    spanReconfigExpectedRequestId = null;
     spanReconfigTimer = null;
     if (spanReconfigQueued) sendSpanUpdate();
   }, 3000);
   const requestedHardwareSpan = Math.max(minHardwareSpanHz, currentBandwidthHz);
-  spanReconfigExpectedSpanHz = requestedHardwareSpan;
-  spanReconfigExpectedLoHz = Math.round(hardwareLoHz);
+  spanRequestIdCounter++;
+  spanReconfigExpectedRequestId = spanRequestIdCounter;
   sendCommand({
     type: 'SetRxSpan',
-    payload: { center_hz: Math.round(hardwareLoHz), span_hz: requestedHardwareSpan }
+    payload: {
+      center_hz: Math.round(hardwareLoHz),
+      span_hz: requestedHardwareSpan,
+      request_id: spanRequestIdCounter
+    }
   });
 }
 
@@ -673,10 +727,10 @@ function drawAxis(width, height) {
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const axisY = height - axisHeight;
-  ctx.fillStyle = '#111'; // Dark background
+  ctx.fillStyle = '#111';
   ctx.fillRect(0, axisY, width, axisHeight);
 
-  ctx.fillStyle = '#fff'; // White text
+  ctx.fillStyle = '#fff';
   ctx.font = '16px monospace';
   ctx.textBaseline = 'middle';
 
@@ -706,7 +760,7 @@ function drawAxis(width, height) {
     const tickIndex = Math.abs(Math.round(freqHz / subTickIntervalHz)) % 10;
 
     if (tickIndex === 0) {
-      ctx.fillRect(x - 1, axisY, 2, 8); // Major ticks
+      ctx.fillRect(x - 1, axisY, 2, 8);
 
       const freqStr = formatFrequency(freqHz, tickIntervalHz);
       const textWidth = ctx.measureText(freqStr).width;
@@ -718,43 +772,34 @@ function drawAxis(width, height) {
         lastTextRight = textRight;
       }
     } else if (tickIndex === 5) {
-      ctx.fillRect(x, axisY, 1, 6); // Medium ticks
+      ctx.fillRect(x, axisY, 1, 6);
     } else {
-      ctx.fillRect(x, axisY, 1, 4); // Minor ticks
+      ctx.fillRect(x, axisY, 1, 4);
     }
   }
 
-  // Draw demodulation passband box & carrier line
   const listeningHz = parseInt(frequencyInput.value, 10);
-  if (!Number.isNaN(listeningHz) && listeningHz >= startHz && listeningHz <= endHz) {
-    const edges = filterBandEdges(listeningHz);
-    if (edges) {
-      const [boxStartHz, boxEndHz] = edges;
-      const boxStartX = Math.round(((boxStartHz - startHz) / currentBandwidthHz) * width);
-      const boxEndX = Math.round(((boxEndHz - startHz) / currentBandwidthHz) * width);
-
+  const { listenX, boxStartX, boxEndX } = computeOverlayColumns(startHz, currentBandwidthHz, width, listeningHz);
+  if (listenX !== -1) {
+    if (boxStartX !== -1 && boxEndX !== -1) {
       ctx.fillStyle = 'rgba(0, 255, 0, 0.3)';
       ctx.fillRect(boxStartX, axisY, boxEndX - boxStartX, axisHeight);
     }
-
-    const listenX = Math.round(((listeningHz - startHz) / currentBandwidthHz) * width);
     ctx.fillStyle = '#00FF00';
     ctx.fillRect(listenX, axisY, 1, axisHeight);
   }
 
-  // Draw SDR Center / DC Spike Indicator (Orange Vertical Bar on the Axis)
   const sdrCenterX = Math.round(((hardwareLoHz - startHz) / currentBandwidthHz) * width);
   if (sdrCenterX >= 0 && sdrCenterX <= width) {
-    ctx.fillStyle = '#ff9800'; // Amber/Orange
+    ctx.fillStyle = '#ff9800';
     ctx.fillRect(sdrCenterX - 1, axisY, 2, axisHeight);
   }
 
-  // Draw TX LO Indicator (Magenta/Pink bar on axis)
   if (!Number.isNaN(listeningHz)) {
     const txLoHz = listeningHz - txOffsetHz;
     const txLoX = Math.round(((txLoHz - startHz) / currentBandwidthHz) * width);
     if (txLoX >= 0 && txLoX <= width) {
-      ctx.fillStyle = '#ff5599'; // Bright Magenta/Pink
+      ctx.fillStyle = '#ff5599';
       ctx.fillRect(txLoX - 1, axisY, 2, axisHeight);
     }
   }
@@ -835,7 +880,6 @@ function paintWaterfallRow(pixels, rowOffset, row, histStartHz, histBandwidthHz,
   }
 }
 
-// Redraws the waterfall display from history buffer
 function redrawWaterfallFromHistory() {
   const width = canvas.width;
   const wfHeight = canvas.height - axisHeightPx();
@@ -844,18 +888,12 @@ function redrawWaterfallFromHistory() {
 
   const currentStartHz = currentCenterHz - (currentBandwidthHz * 0.5);
   const listeningHz = parseInt(frequencyInput.value, 10);
-  const listenX = (!Number.isNaN(listeningHz) && listeningHz >= currentStartHz && listeningHz <= currentStartHz + currentBandwidthHz)
-    ? Math.round(((listeningHz - currentStartHz) / currentBandwidthHz) * width)
-    : -1;
+  const { listenX, boxStartX, boxEndX } = computeOverlayColumns(currentStartHz, currentBandwidthHz, width, listeningHz);
 
-  let boxStartX = -1, boxEndX = -1;
-  const edges = listenX !== -1 ? filterBandEdges(listeningHz) : null;
-  if (edges) {
-    boxStartX = Math.round(((edges[0] - currentStartHz) / currentBandwidthHz) * width);
-    boxEndX = Math.round(((edges[1] - currentStartHz) / currentBandwidthHz) * width);
+  if (!cachedFullImageData || cachedFullImageData.width !== width || cachedFullImageData.height !== wfHeight) {
+    cachedFullImageData = ctx.createImageData(width, wfHeight);
   }
-
-  const imgData = ctx.createImageData(width, wfHeight);
+  const imgData = cachedFullImageData;
   const data = imgData.data;
 
   const rowStep = rowStepPx();
@@ -868,7 +906,6 @@ function redrawWaterfallFromHistory() {
     const base = topLine * lineBytes;
     paintWaterfallRow(data, base, hist.row, histStartHz, hist.bandwidthHz,
       currentStartHz, currentBandwidthHz, width, listenX, boxStartX, boxEndX);
-    // Replicate the painted line to fill the row's full height (cheap byte copy, no re-interp).
     for (let i = 1; i < rowStep; i++) {
       data.copyWithin(base + i * lineBytes, base, base + lineBytes);
     }
@@ -878,11 +915,8 @@ function redrawWaterfallFromHistory() {
   updateStatusBar();
 }
 
-// Appends a new incoming DSP row to the history and shifts display pixels upward
 function appendWaterfallRow(row) {
   if (isWaitingForHardware) {
-    // Reconfiguring: drop rows until Config lands, then drop settling frames and resume on the
-    // first row with real signal.
     if (!awaitingFirstRow || isEmptyRow(row)) return;
     isWaitingForHardware = false;
     awaitingFirstRow = false;
@@ -898,7 +932,7 @@ function appendWaterfallRow(row) {
   const rowStep = rowStepPx();
 
   rowHistory.unshift({
-    row: new Uint8Array(row),
+    row,
     hardwareLoHz: sdrHardwareLoHz,
     bandwidthHz: sdrBandwidthHz
   });
@@ -906,38 +940,39 @@ function appendWaterfallRow(row) {
 
   ctx.drawImage(canvas, 0, rowStep, width, wfHeight - rowStep, 0, 0, width, wfHeight - rowStep);
 
-  if (!cachedRowData || cachedRowData.width !== width) {
-    cachedRowData = ctx.createImageData(width, 1);
+  if (!cachedRowData || cachedRowData.width !== width || cachedRowData.height !== rowStep) {
+    cachedRowData = ctx.createImageData(width, rowStep);
   }
   const rowData = cachedRowData;
   const pixels = rowData.data;
 
   const startHz = currentCenterHz - (currentBandwidthHz * 0.5);
-  const endHz = currentCenterHz + (currentBandwidthHz * 0.5);
   const sdrStartHz = sdrHardwareLoHz - (sdrBandwidthHz * 0.5);
-
   const listeningHz = parseInt(frequencyInput.value, 10);
-  const listenX = (!Number.isNaN(listeningHz) && listeningHz >= startHz && listeningHz <= endHz)
-    ? Math.round(((listeningHz - startHz) / currentBandwidthHz) * width)
-    : -1;
-
-  let boxStartX = -1, boxEndX = -1;
-  const edges = listenX !== -1 ? filterBandEdges(listeningHz) : null;
-  if (edges) {
-    boxStartX = Math.round(((edges[0] - startHz) / currentBandwidthHz) * width);
-    boxEndX = Math.round(((edges[1] - startHz) / currentBandwidthHz) * width);
-  }
+  const { listenX, boxStartX, boxEndX } = computeOverlayColumns(startHz, currentBandwidthHz, width, listeningHz);
 
   paintWaterfallRow(pixels, 0, row, sdrStartHz, sdrBandwidthHz,
     startHz, currentBandwidthHz, width, listenX, boxStartX, boxEndX);
 
-  for (let i = 0; i < rowStep; i++) {
-    ctx.putImageData(rowData, 0, wfHeight - rowStep + i);
+  const lineBytes = width * 4;
+  for (let i = 1; i < rowStep; i++) {
+    pixels.copyWithin(i * lineBytes, 0, lineBytes);
   }
-  drawAxis(width / dpr, height / dpr);
+  ctx.putImageData(rowData, 0, wfHeight - rowStep);
 }
 
 // --- Interactive Canvas Mouse & Gesture Listeners ---
+let lastTooltipContent = '';
+function updateTooltipContent(content, isHtml) {
+  if (content !== lastTooltipContent) {
+    lastTooltipContent = content;
+    if (isHtml) {
+      hoverTooltip.innerHTML = content;
+    } else {
+      hoverTooltip.textContent = content;
+    }
+  }
+}
 
 canvas.addEventListener('mousedown', (e) => {
   dragBarMoved = false;
@@ -949,47 +984,10 @@ canvas.addEventListener('mousedown', (e) => {
   const startHz = currentCenterHz - (currentBandwidthHz * 0.5);
   const listeningHz = parseInt(frequencyInput.value, 10);
 
-  if (!Number.isNaN(listeningHz)) {
-    const edges = filterBandEdges(listeningHz);
-    if (edges) {
-      const [boxStartHz, boxEndHz] = edges;
-      const listenClientX = ((listeningHz - startHz) / currentBandwidthHz) * rect.width;
-      const startClientX = ((boxStartHz - startHz) / currentBandwidthHz) * rect.width;
-      const endClientX = ((boxEndHz - startHz) / currentBandwidthHz) * rect.width;
-
-      if (Math.abs(x - listenClientX) <= 5) {
-        isDraggingBar = 'carrier';
-        dragBarMoved = false;
-        return;
-      } else if ((currentMode === 'FM' || currentMode === 'LSB') && Math.abs(x - startClientX) <= 5) {
-        isDraggingBar = 'left';
-        dragBarMoved = false;
-        return;
-      } else if ((currentMode === 'FM' || currentMode === 'USB') && Math.abs(x - endClientX) <= 5) {
-        isDraggingBar = 'right';
-        dragBarMoved = false;
-        return;
-      }
-    }
-  }
-
-  // Check if dragging the orange LO center bar on the axis
-  const sdrCenterX = ((hardwareLoHz - startHz) / currentBandwidthHz) * rect.width;
-  const isInAxis = y >= (rect.height - axisHeight);
-  if (isInAxis && Math.abs(x - sdrCenterX) <= 6) {
-    isDraggingBar = 'lo';
-    dragBarMoved = false;
+  const bar = hitTestBar(x, y, rect, listeningHz, startHz, currentBandwidthHz);
+  if (bar) {
+    isDraggingBar = bar;
     return;
-  }
-
-  // Check if dragging the pink TX LO bar on the axis (adjusts the TX DDS offset)
-  if (!Number.isNaN(listeningHz)) {
-    const txLoX = ((listeningHz - txOffsetHz - startHz) / currentBandwidthHz) * rect.width;
-    if (isInAxis && Math.abs(x - txLoX) <= 6) {
-      isDraggingBar = 'txlo';
-      dragBarMoved = false;
-      return;
-    }
   }
 
   isDragging = true;
@@ -1002,12 +1000,11 @@ canvas.addEventListener('mousemove', (e) => {
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
-  const freqHz = currentCenterHz - (currentBandwidthHz * 0.5) + (x / rect.width) * currentBandwidthHz;
-
-  const binHz = currentBandwidthHz / rect.width;
   const startHz = currentCenterHz - (currentBandwidthHz * 0.5);
-  const sdrCenterX = ((hardwareLoHz - startHz) / currentBandwidthHz) * rect.width;
+  const freqHz = startHz + (x / rect.width) * currentBandwidthHz;
+  const binHz = currentBandwidthHz / rect.width;
 
+  const sdrCenterX = ((hardwareLoHz - startHz) / currentBandwidthHz) * rect.width;
   const listeningHz = parseInt(frequencyInput.value, 10);
   const txLoHz = listeningHz - txOffsetHz;
   const txLoX = ((txLoHz - startHz) / currentBandwidthHz) * rect.width;
@@ -1017,19 +1014,22 @@ canvas.addEventListener('mousemove', (e) => {
   const isInAxis = y >= (rect.height - axisHeight);
   const isBigTooltip = (isNearSdrCenter || isNearTxLo) && isInAxis;
 
-  // Set up DC spike warning / LO indicator tooltip
   if (isNearSdrCenter && isInAxis) {
-    hoverTooltip.innerHTML =
+    updateTooltipContent(
       `<span style="color: #ff9800; font-weight: bold;">⚠️ SDR Center (Potential DC Spike)</span><br/>` +
       `<span style="color: #fff;">Freq: ${formatFrequency(hardwareLoHz, binHz)}</span><br/>` +
-      `<span style="color: #aaa; font-size: 11px; font-family: sans-serif; line-height: 1.2;">Drag to retune hardware LO. LO leakage can cause a DC offset spike here.</span>`;
+      `<span style="color: #aaa; font-size: 11px; font-family: sans-serif; line-height: 1.2;">RX LO leakage can cause a DC offset spike here.</span>`,
+      true
+    );
   } else if (isNearTxLo && isInAxis) {
-    hoverTooltip.innerHTML =
+    updateTooltipContent(
       `<span style="color: #ff5599; font-weight: bold;">⚠️ TX LO (DDS Offset: ${formatHzShort(txOffsetHz)})</span><br/>` +
       `<span style="color: #fff;">Freq: ${formatFrequency(txLoHz, binHz)}</span><br/>` +
-      `<span style="color: #aaa; font-size: 11px; font-family: sans-serif; line-height: 1.2;">The TX LO sits this offset below the listening frequency; the FPGA DDS shifts the signal back up. TX LO leakage can cause a carrier spike here — drag to change the offset.</span>`;
+      `<span style="color: #aaa; font-size: 11px; font-family: sans-serif; line-height: 1.2;">TX LO leakage can cause a carrier spike here.</span>`,
+      true
+    );
   } else {
-    hoverTooltip.textContent = formatFrequency(freqHz, binHz);
+    updateTooltipContent(formatFrequency(freqHz, binHz), false);
   }
 
   let leftOffset = x + 15;
@@ -1051,7 +1051,7 @@ canvas.addEventListener('mousemove', (e) => {
   if (isDraggingBar) {
     dragBarMoved = true;
     canvas.style.cursor = 'ew-resize';
-    
+
     if (isDraggingBar === 'carrier') {
       const carrierHz = Math.round(clampListeningHz(freqHz));
       frequencyInput.value = carrierHz;
@@ -1060,35 +1060,26 @@ canvas.addEventListener('mousemove', (e) => {
         sendCommand({ type: 'SetRxFrequency', payload: { hz: carrierHz } });
       }, 50);
     } else if (isDraggingBar === 'lo') {
-      hardwareLoHz = Math.round(freqHz);
+      hardwareLoHz = Math.max(MIN_LO_HZ, Math.min(MAX_LO_HZ, Math.round(freqHz)));
     } else if (isDraggingBar === 'txlo') {
       if (!Number.isNaN(listeningHz)) {
         txOffsetHz = clampTxOffset(Math.round(listeningHz - freqHz));
         if (txOffsetInput) txOffsetInput.value = txOffsetHz;
       }
-    } else if (isDraggingBar === 'left') {
-      const maxBw = (currentMode === 'USB' || currentMode === 'LSB') ? 20000 : 110000;
-      if (currentMode === 'FM') currentFilterBw = Math.max(1000, Math.min(maxBw, (listeningHz - freqHz) * 2));
-      else if (currentMode === 'LSB') currentFilterBw = Math.max(1000, Math.min(maxBw, listeningHz - freqHz));
-      filterBwInput.value = Math.round(currentFilterBw);
+    } else if (isDraggingBar === 'left' || isDraggingBar === 'right') {
+      const diff = isDraggingBar === 'left' ? listeningHz - freqHz : freqHz - listeningHz;
+      const mode = modeSelect ? modeSelect.value : 'FM';
+      const rawBw = mode === 'FM' ? diff * 2 : diff;
+      const newBw = clampFilterBw(rawBw);
+      filterBwInput.value = Math.round(newBw);
       if (filterBwTimeout) clearTimeout(filterBwTimeout);
       filterBwTimeout = setTimeout(() => {
-        sendCommand({ type: 'SetRxDemodulation', payload: { mode: currentMode, filter_bw_hz: currentFilterBw } });
-        syncTxToRx();
-      }, 50);
-    } else if (isDraggingBar === 'right') {
-      const maxBw = (currentMode === 'USB' || currentMode === 'LSB') ? 20000 : 110000;
-      if (currentMode === 'FM') currentFilterBw = Math.max(1000, Math.min(maxBw, (freqHz - listeningHz) * 2));
-      else if (currentMode === 'USB') currentFilterBw = Math.max(1000, Math.min(maxBw, freqHz - listeningHz));
-      filterBwInput.value = Math.round(currentFilterBw);
-      if (filterBwTimeout) clearTimeout(filterBwTimeout);
-      filterBwTimeout = setTimeout(() => {
-        sendCommand({ type: 'SetRxDemodulation', payload: { mode: currentMode, filter_bw_hz: currentFilterBw } });
+        sendCommand({ type: 'SetRxDemodulation', payload: { mode, filter_bw_hz: newBw } });
         syncTxToRx();
       }, 50);
     }
 
-    redrawWaterfallFromHistory();
+    requestRedraw();
     return;
   }
 
@@ -1098,36 +1089,15 @@ canvas.addEventListener('mousemove', (e) => {
       dragMoved = true;
       canvas.style.cursor = 'grabbing';
     }
-    // The hardware LO (and its orange marker) stays put while panning; updateHardwareLo
-    // decides on mouseup whether a retune is actually needed.
     const deltaHz = (deltaX / rect.width) * currentBandwidthHz;
     currentCenterHz = dragStartCenterHz - deltaHz;
 
     if (dragMoved) {
-      redrawWaterfallFromHistory();
+      requestRedraw();
     }
   } else {
-    let hoverEdge = false;
-    if (!Number.isNaN(listeningHz)) {
-      const edges = filterBandEdges(listeningHz);
-      if (edges) {
-        const [boxStartHz, boxEndHz] = edges;
-        const listenClientX = ((listeningHz - startHz) / currentBandwidthHz) * rect.width;
-        const startClientX = ((boxStartHz - startHz) / currentBandwidthHz) * rect.width;
-        const endClientX = ((boxEndHz - startHz) / currentBandwidthHz) * rect.width;
-
-        if (Math.abs(x - listenClientX) <= 5) hoverEdge = true;
-        if ((currentMode === 'FM' || currentMode === 'LSB') && Math.abs(x - startClientX) <= 5) hoverEdge = true;
-        if ((currentMode === 'FM' || currentMode === 'USB') && Math.abs(x - endClientX) <= 5) hoverEdge = true;
-
-        const sdrCenterX_hover = ((hardwareLoHz - startHz) / currentBandwidthHz) * rect.width;
-        const isInAxis_hover = y >= (rect.height - axisHeight);
-        if (isInAxis_hover && Math.abs(x - sdrCenterX_hover) <= 6) hoverEdge = true;
-      }
-      if (isInAxis && Math.abs(x - txLoX) <= 6) hoverEdge = true;
-    }
-
-    canvas.style.cursor = hoverEdge ? 'ew-resize' : 'crosshair';
+    const bar = hitTestBar(x, y, rect, listeningHz, startHz, currentBandwidthHz);
+    canvas.style.cursor = bar ? 'ew-resize' : 'crosshair';
   }
 });
 
@@ -1144,7 +1114,7 @@ canvas.addEventListener('click', (e) => {
   frequencyInput.value = listeningHz;
   sendCommand({ type: 'SetRxFrequency', payload: { hz: listeningHz } });
   updateHardwareLo();
-  redrawWaterfallFromHistory();
+  requestRedraw();
 });
 
 canvas.addEventListener('mouseleave', () => {
@@ -1169,7 +1139,14 @@ canvas.addEventListener('wheel', (e) => {
   const hwSpan = Math.max(minHardwareSpanHz, currentBandwidthHz);
   hardwareLoHz = desiredHardwareLo(currentCenterHz, currentBandwidthHz, hwSpan, parseInt(frequencyInput.value, 10));
 
-  redrawWaterfallFromHistory();
+  const listeningHz = parseInt(frequencyInput.value, 10);
+  const clampedListening = clampListeningHz(listeningHz, hardwareLoHz, hwSpan);
+  if (clampedListening !== listeningHz) {
+    if (frequencyInput) frequencyInput.value = clampedListening;
+    sendCommand({ type: 'SetRxFrequency', payload: { hz: clampedListening } });
+  }
+
+  requestRedraw();
 
   syncCenterFreqInput();
   updatePlaybackAbility();
@@ -1191,15 +1168,18 @@ window.addEventListener('mouseup', () => {
       const newHz = parseInt(frequencyInput.value, 10);
       if (!Number.isNaN(newHz)) {
         sendCommand({ type: 'SetRxFrequency', payload: { hz: newHz } });
-        redrawWaterfallFromHistory();
+        requestRedraw();
       }
     } else if (wasLoDrag) {
       syncCenterFreqInput();
+      isWaitingForHardware = true;
+      awaitingFirstRow = false;
+      armSettleFallback(500);
       sendCommand({ type: 'SetRxCenterFrequency', payload: { hz: Math.round(hardwareLoHz) } });
-      redrawWaterfallFromHistory();
+      requestRedraw();
     } else if (wasTxLoDrag) {
       sendCommand({ type: 'SetTxOffset', payload: { hz: txOffsetHz } });
-      redrawWaterfallFromHistory();
+      requestRedraw();
     } else if (wasFilterEdgeDrag) {
       syncTxToRx();
     }
@@ -1241,7 +1221,7 @@ window.addEventListener('keydown', (e) => {
     const hwSpan = Math.max(minHardwareSpanHz, currentBandwidthHz);
     hardwareLoHz = desiredHardwareLo(currentCenterHz, currentBandwidthHz, hwSpan, listeningHz);
 
-    redrawWaterfallFromHistory();
+    requestRedraw();
     syncCenterFreqInput();
     updatePlaybackAbility();
 
@@ -1256,8 +1236,9 @@ window.addEventListener('keydown', (e) => {
     } else {
       currentCenterHz += panStepHz;
     }
+    currentCenterHz = Math.max(MIN_LO_HZ, Math.min(MAX_LO_HZ, currentCenterHz));
 
-    redrawWaterfallFromHistory();
+    requestRedraw();
 
     if (keyboardPanTimeout) {
       clearTimeout(keyboardPanTimeout);
@@ -1280,44 +1261,41 @@ runStatusToggle.addEventListener('click', () => {
 setFreqButton.addEventListener('click', () => {
   const hz = parseInt(frequencyInput.value, 10);
   if (!Number.isNaN(hz)) {
-    if (hz < 70000000 || hz > 6000000000) {
-      alert(`The Pluto+ (AD9361) tuning range is 70 MHz to 6.0 GHz.\nPlease enter a value between 70000000 and 6000000000.`);
+    if (!isValidLoHz(hz)) {
+      alert(`The Pluto+ (AD9361) tuning range is 70 MHz to 6.0 GHz.\nPlease enter a value between ${MIN_LO_HZ} and ${MAX_LO_HZ}.`);
       return;
     }
     sendCommand({ type: 'SetRxFrequency', payload: { hz } });
     currentCenterHz = hz;
     updateHardwareLo();
-    redrawWaterfallFromHistory();
+    requestRedraw();
   }
 });
 
 setFilterBwButton.addEventListener('click', () => {
   const bw = parseInt(filterBwInput.value, 10);
   if (!Number.isNaN(bw) && bw > 0) {
-    const maxBw = (currentMode === 'USB' || currentMode === 'LSB') ? 20000 : 110000;
-    currentFilterBw = Math.max(1000, Math.min(maxBw, bw));
-    filterBwInput.value = currentFilterBw;
+    const clamped = clampFilterBw(bw);
+    filterBwInput.value = clamped;
     sendCommand({
       type: 'SetRxDemodulation',
-      payload: { mode: currentMode, filter_bw_hz: currentFilterBw }
+      payload: { mode: modeSelect.value, filter_bw_hz: clamped }
     });
-    drawAxis(canvas.width / dpr, canvas.height / dpr);
-    redrawWaterfallFromHistory();
+    requestRedraw();
     syncTxToRx();
   }
 });
 
 modeSelect.addEventListener('change', (e) => {
-  currentMode = e.target.value;
-  currentFilterBw = currentMode === 'FM' ? 15000 : 3000;
-  filterBwInput.value = currentFilterBw;
+  const mode = e.target.value;
+  const defaultBw = mode === 'FM' ? 15000 : 3000;
+  filterBwInput.value = defaultBw;
 
   sendCommand({
     type: 'SetRxDemodulation',
-    payload: { mode: currentMode, filter_bw_hz: currentFilterBw }
+    payload: { mode, filter_bw_hz: defaultBw }
   });
-  drawAxis(canvas.width / dpr, canvas.height / dpr);
-  redrawWaterfallFromHistory();
+  requestRedraw();
   syncTxToRx();
 });
 
@@ -1332,6 +1310,7 @@ waterfallFftSizeSelect.addEventListener('change', (e) => {
   const size = parseInt(e.target.value, 10);
   if (!Number.isNaN(size)) {
     sendCommand({ type: 'SetRxWaterfallFftSize', payload: { size } });
+    updateStatusBar();
   }
 });
 
@@ -1341,7 +1320,7 @@ antennaSelect.addEventListener('change', (e) => {
     sendCommand({ type: 'SetRxAntenna', payload: { antenna } });
     isWaitingForHardware = true;
     awaitingFirstRow = false;
-    armSettleFallback(3000);
+    armSettleFallback(500);
   }
 });
 
@@ -1372,12 +1351,10 @@ if (txGainSlider) {
     if (txGainVal) {
       txGainVal.textContent = val.toFixed(2) + ' dB';
     }
-    updateStatusBar();
   });
   txGainSlider.addEventListener('change', (e) => {
     const val = parseFloat(e.target.value);
     sendCommand({ type: 'SetTxGain', payload: { db: val } });
-    updateStatusBar();
   });
 }
 
@@ -1392,7 +1369,7 @@ if (txOffsetInput) {
     txOffsetInput.value = hz;
     txOffsetHz = hz;
     sendCommand({ type: 'SetTxOffset', payload: { hz } });
-    redrawWaterfallFromHistory();
+    requestRedraw();
   });
 }
 
@@ -1400,7 +1377,6 @@ if (setRfBandwidthButton && rfBandwidthInput) {
   setRfBandwidthButton.addEventListener('click', () => {
     const bw = parseInt(rfBandwidthInput.value, 10);
     if (!Number.isNaN(bw) && bw >= 200000 && bw <= 40000000) {
-      // Becomes the setpoint we re-apply after every span change until Sync goes back on.
       manualRfBwHz = bw;
       sendCommand({ type: 'SetRxRfBandwidth', payload: { bw_hz: bw } });
     }
@@ -1410,12 +1386,9 @@ if (setRfBandwidthButton && rfBandwidthInput) {
 if (syncRfBwCheckbox) {
   syncRfBwCheckbox.addEventListener('change', (e) => {
     if (e.target.checked) {
-      // Back to the radio's own behaviour: hand the filter to the span and stop re-applying.
       manualRfBwHz = null;
       sendCommand({ type: 'SetRxRfBandwidth', payload: { bw_hz: 0 } });
     } else {
-      // Nothing to send — the filter already sits where it is. Just start holding that value,
-      // so the next span change doesn't carry it off.
       const bw = rfBandwidthInput ? parseInt(rfBandwidthInput.value, 10) : NaN;
       manualRfBwHz = Number.isNaN(bw) ? sdrBandwidthHz : bw;
     }
@@ -1446,29 +1419,31 @@ if (wfMaxDbSlider) {
 if (wfResetButton) {
   wfResetButton.addEventListener('click', () => {
     if (wfMinDbSlider) {
-      wfMinDbSlider.value = -100;
-      if (wfMinDbVal) wfMinDbVal.textContent = '-100 dB';
+      wfMinDbSlider.value = WF_SCALE_DEFAULTS.min_db;
+      if (wfMinDbVal) wfMinDbVal.textContent = `${WF_SCALE_DEFAULTS.min_db} dB`;
     }
     if (wfMaxDbSlider) {
-      wfMaxDbSlider.value = -40;
-      if (wfMaxDbVal) wfMaxDbVal.textContent = '-40 dB';
+      wfMaxDbSlider.value = WF_SCALE_DEFAULTS.max_db;
+      if (wfMaxDbVal) wfMaxDbVal.textContent = `${WF_SCALE_DEFAULTS.max_db} dB`;
     }
     sendCommand({
       type: 'SetRxWaterfallScale',
-      payload: { min_db: -100.0, max_db: -40.0 }
+      payload: { min_db: WF_SCALE_DEFAULTS.min_db, max_db: WF_SCALE_DEFAULTS.max_db }
     });
   });
 }
 
 setCenterFreqButton.addEventListener('click', () => {
   const hz = parseInt(centerFreqInput.value, 10);
-  if (!Number.isNaN(hz)) {
+  if (isValidLoHz(hz)) {
     hardwareLoHz = hz;
-    redrawWaterfallFromHistory();
+    requestRedraw();
     isWaitingForHardware = true;
     awaitingFirstRow = false;
-    armSettleFallback(3000);
+    armSettleFallback(500);
     sendCommand({ type: 'SetRxCenterFrequency', payload: { hz } });
+  } else {
+    alert(`The Pluto+ (AD9361) tuning range is 70 MHz to 6.0 GHz.\nPlease enter a value between ${MIN_LO_HZ} and ${MAX_LO_HZ}.`);
   }
 });
 
@@ -1486,7 +1461,7 @@ function resizeCanvas() {
   if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
     canvas.width = targetWidth;
     canvas.height = targetHeight;
-    redrawWaterfallFromHistory();
+    requestRedraw();
   }
 }
 

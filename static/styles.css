@@ -61,8 +61,7 @@ label {
 
 button,
 select,
-input[type="number"],
-input[type="text"] {
+input[type="number"] {
   background-color: #3c3c3c;
   color: #ffffff;
   border: 1px solid #555555;
@@ -178,10 +177,6 @@ canvas {
   margin-left: 20px;
 }
 
-.mb-20 {
-  margin-bottom: 20px;
-}
-
 /* Pulls a row up against the one above it, tightening the container's 15px gap */
 .mt-n8 {
   margin-top: -8px;
@@ -240,23 +235,6 @@ canvas {
   gap: 12px;
 }
 
-.rx-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  width: 100%;
-}
-
-.rx-row-footer {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  gap: 15px;
-  border-top: 1px solid #3c3c3c;
-  padding-top: 8px;
-}
-
 /* --- Transmit controls block --- */
 .tx-controls {
   flex-direction: column;
@@ -267,6 +245,7 @@ canvas {
   border-bottom-right-radius: 0;
 }
 
+.rx-row,
 .tx-row {
   display: flex;
   align-items: center;
@@ -282,14 +261,18 @@ canvas {
   flex-wrap: wrap;
 }
 
+.rx-row-footer,
 .tx-row-footer {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   width: 100%;
   gap: 15px;
   border-top: 1px solid #3c3c3c;
   padding-top: 8px;
+}
+
+.tx-row-footer {
+  justify-content: flex-end;
 }
 
 .tx-badge {

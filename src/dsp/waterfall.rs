@@ -1,7 +1,7 @@
+use crate::dsp::filter_design::hamming_window;
 use num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 use std::cmp::min;
-use std::f32::consts::PI;
 use std::sync::Arc;
 
 /// Windowed FFT: dB-scaled magnitude row for the waterfall/spectrum display,
@@ -20,21 +20,9 @@ impl WaterfallProcessor {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(fft_size);
 
-        let mut window = Vec::with_capacity(fft_size);
-
-        // Pre-calculate Hamming window
-        for i in 0..fft_size {
-            let n = i as f32;
-            let size = fft_size as f32;
-
-            let w = 0.54 - 0.46 * ((2.0 * PI * n) / (size - 1.0)).cos();
-
-            window.push(w);
-        }
-
         Self {
             fft,
-            window,
+            window: hamming_window(fft_size),
             fft_buffer: vec![Complex::new(0.0, 0.0); fft_size],
             fft_size,
             min_db: -100.0,
@@ -46,7 +34,16 @@ impl WaterfallProcessor {
         self.fft_size
     }
 
+    /// Convenience wrapper around `process_frame_into` that allocates the output row
     pub fn process_frame(&mut self, samples: &[Complex<f32>]) -> Vec<u8> {
+        let mut row = vec![0; self.fft_size];
+        self.process_frame_into(samples, &mut row);
+        row
+    }
+
+    /// Computes one dB-scaled magnitude row into `row` (length must be `fft_size`).
+    pub fn process_frame_into(&mut self, samples: &[Complex<f32>], row: &mut [u8]) {
+        assert_eq!(row.len(), self.fft_size, "output row length != fft_size");
         let n = min(self.fft_size, samples.len());
 
         // Apply window
@@ -61,7 +58,6 @@ impl WaterfallProcessor {
 
         self.fft.process(&mut self.fft_buffer);
 
-        let mut row = vec![0; self.fft_size];
         let half_size = self.fft_size / 2;
 
         // Constants for scaling DB values to 0.0 .. 1.0 range
@@ -89,14 +85,12 @@ impl WaterfallProcessor {
         }
 
         // Visual DC Spike Removal (probably not needed as the Pluto already does a rather good job of this): Interpolate the center bins to hide the hardware LO leakage
-        if self.fft_size >= 4 {
+        if self.fft_size >= 5 {
             let center = half_size;
             let interpolated = ((row[center - 2] as u16 + row[center + 2] as u16) / 2) as u8;
             row[center - 1] = interpolated;
             row[center] = interpolated;
             row[center + 1] = interpolated;
         }
-
-        row
     }
 }

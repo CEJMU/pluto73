@@ -6,6 +6,7 @@
 
 module dsp_mux_rx (
     input wire clk,
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input wire sel,
 
     // Input

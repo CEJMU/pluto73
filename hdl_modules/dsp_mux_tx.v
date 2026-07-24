@@ -17,7 +17,9 @@
 
 module dsp_mux_tx (
     input wire clk,
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input wire sel,
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input wire enabled,     // 0 = bypass, 1 = custom DSP active
     
     // Raw inputs from tx_upack
@@ -25,21 +27,27 @@ module dsp_mux_tx (
     input wire [15:0] dma_q0,
     input wire [15:0] dma_i1,
     input wire [15:0] dma_q1,
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input wire dma_valid,   // tx_upack/fifo_rd_valid
     
     // DAC valid input from AD9361
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input wire dac_valid,   // axi_ad9361/dac_enable_i0
     
     // Dynamic DSP strobe and config inputs
-    input wire strobe_in,           // tx_strobe_gen_0/enable (pulsed at fs rate)
+    (* X_INTERFACE_IGNORE = "TRUE" *)
+    input wire strobe_in,           // tx_strobe_gen_0/strobe_out (pulsed at fs rate)
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input wire [7:0] cic_interp,    // tx_cic_interpolation from GPIO TX bits [11:4]
     
     // Input for processing chain (tx_fir)
     output wire [15:0] proc_i,
     output wire [15:0] proc_q,
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     output wire proc_valid,         // to tx_fir/s_axis_data_tvalid
     
     // Read enable to tx_upack
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     output wire fifo_rd_en,
     
     // Output from processing chain (tx_cmpy)

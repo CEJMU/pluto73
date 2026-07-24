@@ -57,6 +57,9 @@ The Pluto block design is a Vivado `write_bd_tcl` export (`hdl_bd/system_bd_desi
 
 This keeps the ~1400-line generated design as a **first-class, refreshable file** in this repo (not buried in a patch), while the change to the upstream tree stays a handful of lines. Verified end-to-end: the design builds and `validate_bd_design` passes in the real ADI project flow.
 
+
+Note: To keep Vivado from auto-inferring bus interfaces on generic control/status port names, since it matches names like `rst_n` or `*valid*` against known interface patterns and groups them, some ports in hdl_modules are marked `X_INTERFACE_IGNORE`.
+
 ---
 
 ## What was changed vs. stock Pluto+

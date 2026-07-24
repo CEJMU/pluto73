@@ -15,12 +15,19 @@ let debugAudioReceivedCount = 0;
 let isAudioEnabled = false;
 let currentVolume = 0.0;
 
+// Playback rate of the PCM the backend streams. 48000 is only the pre-Config default; the
+// backend delivers the authoritative rate in every Config message.
+let audioSampleRate = 48000;
+
+export function setAudioSampleRate(hz) {
+  audioSampleRate = hz;
+}
+
 function initAudio() {
   if (!audioCtx) {
-    console.log("Initializing AudioContext at 48000 Hz...");
+    console.log(`Initializing AudioContext at ${audioSampleRate} Hz...`);
     try {
-      // Default to 48kHz which is common for SDR audio pipelines
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: audioSampleRate });
 
       // Add a limiter to compress loud sounds automatically without harsh clipping
       compressorNode = audioCtx.createDynamicsCompressor();
@@ -59,16 +66,14 @@ export function playAudioChunk(pcmArray) {
 
   debugAudioReceivedCount++;
 
-  const buffer = audioCtx.createBuffer(1, pcmArray.length, 48000);
+  const buffer = audioCtx.createBuffer(1, pcmArray.length, audioSampleRate);
   const channelData = buffer.getChannelData(0);
-  let maxAmp = 0;
   for (let i = 0; i < pcmArray.length; i++) {
     let val = pcmArray[i];
     if (!Number.isFinite(val)) val = 0.0;
-    if (val > 1.0) val = 1.0;
+    else if (val > 1.0) val = 1.0;
     else if (val < -1.0) val = -1.0;
     channelData[i] = val;
-    if (Math.abs(val) > maxAmp) maxAmp = Math.abs(val);
   }
 
   const source = audioCtx.createBufferSource();
@@ -103,12 +108,27 @@ export function playAudioChunk(pcmArray) {
   nextAudioTime += buffer.duration / source.playbackRate.value;
 }
 
-async function setMutedState(muted) {
-  muteCheckbox.checked = muted;
+export function applyServerAudioState(enabled) {
+  if (muteCheckbox) muteCheckbox.checked = !enabled;
+  if (enabled) {
+    setMutedState(false, true);
+  } else {
+    isAudioEnabled = false;
+  }
+}
+
+async function setMutedState(muted, fromServer = false) {
   if (!muted) {
     console.log("Unmuted. Requesting audio initialization...");
     initAudio();
-    if (audioCtx && audioCtx.state === 'suspended') {
+    if (!audioCtx) {
+      if (muteCheckbox) muteCheckbox.checked = true;
+      isAudioEnabled = false;
+      return;
+    }
+    if (muteCheckbox) muteCheckbox.checked = false;
+
+    if (audioCtx.state === 'suspended') {
       await audioCtx.resume();
       console.log("AudioContext forcefully resumed. State:", audioCtx.state);
     }
@@ -125,10 +145,15 @@ async function setMutedState(muted) {
     isAudioEnabled = true;
     nextAudioTime = 0; // Reset scheduling to avoid massive underflow warnings after being paused
     debugAudioReceivedCount = 0; // Reset debug counter
-    sendCommand({ type: 'SetRxAudioEnabled', payload: { enabled: true } });
+    if (!fromServer) {
+      sendCommand({ type: 'SetRxAudioEnabled', payload: { enabled: true } });
+    }
   } else {
+    if (muteCheckbox) muteCheckbox.checked = true;
     isAudioEnabled = false;
-    sendCommand({ type: 'SetRxAudioEnabled', payload: { enabled: false } });
+    if (!fromServer) {
+      sendCommand({ type: 'SetRxAudioEnabled', payload: { enabled: false } });
+    }
   }
 }
 

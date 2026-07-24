@@ -2,7 +2,8 @@
 // frames, plus the TX mode/bandwidth/sync UI. Self-contained - reaches into the core only for
 // `sendBinary` (to push PCM), `sendCommand` (to key/configure TX), and `updateStatusBar`.
 
-import { sendCommand, sendBinary, updateStatusBar } from './app.js';
+import { sendCommand, sendBinary, updateStatusBar, clampTxFilterBw } from './app.js';
+import { FRAME_TYPE, encodeFrame } from './framing.js';
 
 const txStatusLabel = document.getElementById('tx-status');
 const txMicButton = document.getElementById('tx-mic');
@@ -16,6 +17,7 @@ const modeSelect = document.getElementById('mode-select');
 const filterBwInput = document.getElementById('filter-bw');
 
 let isTransmitting = false;
+let txStarting = false;
 let txChunkCount = 0;
 let selectedTxFile = null;
 let txStream = null;
@@ -23,38 +25,37 @@ let txProcessor = null;
 let txAudioCtx = null;
 let txFileSource = null;
 
-let isWorkletLoaded = false;
 let workletLoadPromise = null;
+
+// TX capture rate. 48000 is only the pre-Config default; the backend delivers the authoritative
+// rate in every Config message (applied via setTxAudioSampleRate before any TX can start).
+let txAudioSampleRate = 48000;
+
+export function setTxAudioSampleRate(hz) {
+  txAudioSampleRate = hz;
+}
 
 function initTxAudio() {
   if (!txAudioCtx) {
-    txAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    txAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: txAudioSampleRate });
   }
-  if (!isWorkletLoaded && !workletLoadPromise) {
+  if (!workletLoadPromise) {
     console.log("[TX Client] Loading AudioWorklet module...");
     workletLoadPromise = txAudioCtx.audioWorklet.addModule('js/tx-processor.js')
       .then(() => {
-        isWorkletLoaded = true;
         console.log("[TX Client] AudioWorklet module loaded successfully.");
       })
       .catch((err) => {
         console.error("[TX Client] Failed to load AudioWorklet module:", err);
         workletLoadPromise = null;
+        throw err;
       });
   }
-  return workletLoadPromise || Promise.resolve();
+  return workletLoadPromise;
 }
 
 function sendTxAudioChunk(pcmArray) {
-  // 4-byte header for alignment. Header = 2 indicates TX audio.
-  const buffer = new ArrayBuffer(4 + pcmArray.length * 4);
-  const view = new DataView(buffer);
-  view.setUint32(0, 2, true); // Little endian 2
-
-  const floats = new Float32Array(buffer, 4);
-  floats.set(pcmArray);
-
-  if (!sendBinary(buffer)) return;
+  if (!sendBinary(encodeFrame(FRAME_TYPE.TX_AUDIO, pcmArray))) return;
 
   txChunkCount++;
   if (txChunkCount === 1) {
@@ -65,23 +66,92 @@ function sendTxAudioChunk(pcmArray) {
   }
 }
 
+function sendTxState(active) {
+  sendCommand({
+    type: 'SetTxState',
+    payload: {
+      active,
+      tx_gain_db: parseFloat(txGainSlider.value) || 0
+    }
+  });
+}
+
+function sendTxModulation(mode, bwHz) {
+  const cleanMode = (mode === 'USB' || mode === 'LSB') ? mode : 'USB';
+  const cleanBw = clampTxFilterBw(bwHz || 2800);
+  txModeSelect.value = cleanMode;
+  txFilterBwInput.value = cleanBw;
+  sendCommand({
+    type: 'SetTxModulation',
+    payload: {
+      mode: cleanMode,
+      filter_bw_hz: cleanBw
+    }
+  });
+  updateStatusBar();
+}
+
+function stopTx() {
+  if (txStream) {
+    txStream.getTracks().forEach(track => track.stop());
+    txStream = null;
+  }
+  if (txFileSource) {
+    txFileSource.onended = null;
+    try { txFileSource.stop(); } catch (_) {}
+    try { txFileSource.disconnect(); } catch (_) {}
+    txFileSource = null;
+  }
+  if (txProcessor) {
+    try { txProcessor.disconnect(); } catch (_) {}
+    txProcessor = null;
+  }
+  isTransmitting = false;
+
+  if (txStatusLabel) {
+    txStatusLabel.textContent = "TX Ready";
+    txStatusLabel.style.color = "";
+  }
+  if (txMicButton) {
+    txMicButton.textContent = "Mic TX";
+    txMicButton.style.backgroundColor = "";
+    txMicButton.disabled = !window.isConnected;
+  }
+  if (txFileInput) {
+    txFileInput.value = "";
+    txFileInput.disabled = !window.isConnected;
+  }
+  selectedTxFile = null;
+  if (txFileConfirmButton) {
+    txFileConfirmButton.textContent = "Send File";
+    txFileConfirmButton.style.backgroundColor = "";
+    txFileConfirmButton.style.display = 'none';
+  }
+
+  sendTxState(false);
+}
+
 async function startMicTx() {
+  if (txStarting || isTransmitting) return;
+  txStarting = true;
+
   if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     const secureUrl = `https://${window.location.host}${window.location.pathname}`;
     if (confirm("Microphone access requires HTTPS on non-localhost connections.\nWould you like to redirect to the secure version?")) {
       window.location.href = secureUrl;
+      txStarting = false;
       return;
     }
   }
 
   txChunkCount = 0;
-  await initTxAudio();
-  if (txAudioCtx.state === 'suspended') {
-    await txAudioCtx.resume();
-  }
-
-  console.log("[TX Client] Requesting microphone access...");
   try {
+    await initTxAudio();
+    if (txAudioCtx.state === 'suspended') {
+      await txAudioCtx.resume();
+    }
+
+    console.log("[TX Client] Requesting microphone access...");
     txStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     console.log("[TX Client] Microphone access granted. Connecting audio nodes.");
     const source = txAudioCtx.createMediaStreamSource(txStream);
@@ -89,7 +159,7 @@ async function startMicTx() {
     txProcessor = new AudioWorkletNode(txAudioCtx, 'tx-processor');
     txProcessor.port.onmessage = (event) => {
       if (!isTransmitting) return;
-      sendTxAudioChunk(event.data);
+      sendTxAudioChunk(new Float32Array(event.data));
     };
 
     source.connect(txProcessor);
@@ -100,92 +170,33 @@ async function startMicTx() {
     txStatusLabel.style.color = "#FF5555";
     txMicButton.textContent = "Stop Mic TX";
     txMicButton.style.backgroundColor = "#aa0000";
-    txFileInput.disabled = true;
+    if (txFileInput) txFileInput.disabled = true;
 
-    sendCommand({
-      type: 'SetTxState',
-      payload: {
-        active: true,
-        tx_gain_db: parseFloat(txGainSlider.value)
-      }
-    });
+    sendTxState(true);
   } catch (err) {
-    console.error("Error accessing microphone:", err);
+    console.error("Error accessing microphone or initializing TX audio:", err);
+    if (txStream) {
+      txStream.getTracks().forEach(track => track.stop());
+      txStream = null;
+    }
     alert("Could not access microphone.");
+    stopTx();
+  } finally {
+    txStarting = false;
   }
-}
-
-function stopMicTx() {
-  if (txStream) {
-    txStream.getTracks().forEach(track => track.stop());
-    txStream = null;
-  }
-  if (txProcessor) {
-    txProcessor.disconnect();
-    txProcessor = null;
-  }
-  isTransmitting = false;
-  txStatusLabel.textContent = "TX Ready";
-  txStatusLabel.style.color = "";
-  txMicButton.textContent = "Mic TX";
-  txMicButton.style.backgroundColor = "";
-  txFileInput.disabled = !window.isConnected;
-
-  sendCommand({
-    type: 'SetTxState',
-    payload: {
-      active: false,
-      tx_gain_db: parseFloat(txGainSlider.value)
-    }
-  });
-}
-
-function stopFileTx() {
-  if (txFileSource) {
-    txFileSource.onended = null;
-    txFileSource.stop();
-    txFileSource.disconnect();
-    txFileSource = null;
-  }
-  if (txProcessor) {
-    txProcessor.disconnect();
-    txProcessor = null;
-  }
-  isTransmitting = false;
-  txStatusLabel.textContent = "TX Ready";
-  txStatusLabel.style.color = "";
-  txFileInput.value = "";
-  txFileInput.disabled = !window.isConnected;
-  txMicButton.disabled = !window.isConnected;
-
-  selectedTxFile = null;
-  txFileConfirmButton.textContent = "Send File";
-  txFileConfirmButton.style.backgroundColor = "";
-  txFileConfirmButton.style.display = 'none';
-
-  sendCommand({
-    type: 'SetTxState',
-    payload: {
-      active: false,
-      tx_gain_db: parseFloat(txGainSlider.value)
-    }
-  });
 }
 
 // Mirrors the RX mode/bandwidth onto TX when the "sync RX<->TX" box is checked.
 export function syncTxToRx() {
   if (!syncRxTxCheckbox || !syncRxTxCheckbox.checked) return;
-  txModeSelect.value = modeSelect.value;
-  txFilterBwInput.value = filterBwInput.value;
+  sendTxModulation(modeSelect.value, parseFloat(filterBwInput.value) || 2800);
+}
 
-  sendCommand({
-    type: 'SetTxModulation',
-    payload: {
-      mode: txModeSelect.value,
-      filter_bw_hz: parseFloat(txFilterBwInput.value) || 2800
-    }
-  });
-  updateStatusBar();
+// A reconnect must converge the radio to the UI state: if this page is not transmitting,
+// re-assert TX off (a connection drop mid-transmission may have left the backend keyed).
+export function reassertTxState() {
+  if (isTransmitting) return;
+  sendTxState(false);
 }
 
 // Enables/cleans up the TX controls when the connection state changes. Called by the core's
@@ -194,13 +205,13 @@ export function applyConnectionState(isConnected) {
   if (txMicButton && !isTransmitting) txMicButton.disabled = !isConnected;
   if (txFileInput && !isTransmitting) txFileInput.disabled = !isConnected;
 
-  if (!isConnected && txFileConfirmButton) {
+  if (!isConnected) {
     if (isTransmitting) {
-      stopFileTx();
+      stopTx();
     } else {
       selectedTxFile = null;
       if (txFileInput) txFileInput.value = "";
-      txFileConfirmButton.style.display = 'none';
+      if (txFileConfirmButton) txFileConfirmButton.style.display = 'none';
     }
   }
 }
@@ -208,37 +219,16 @@ export function applyConnectionState(isConnected) {
 // Wires all TX-related controls. Called once from the core after load.
 export function initTx() {
   txModeSelect.addEventListener('change', (e) => {
-    const mode = e.target.value;
-    // TX only supports SSB (USB/LSB); default to a 2.8 kHz voice bandwidth.
-    const defaultBw = 2800;
-    txFilterBwInput.value = defaultBw;
-    sendCommand({
-      type: 'SetTxModulation',
-      payload: {
-        mode: mode,
-        filter_bw_hz: defaultBw
-      }
-    });
-    updateStatusBar();
+    sendTxModulation(e.target.value, parseFloat(txFilterBwInput.value) || 2800);
   });
 
   txFilterBwInput.addEventListener('change', () => {
-    let val = parseFloat(txFilterBwInput.value) || 0;
-    val = Math.max(1000, Math.min(20000, val));
-    txFilterBwInput.value = val;
-    sendCommand({
-      type: 'SetTxModulation',
-      payload: {
-        mode: txModeSelect.value,
-        filter_bw_hz: val
-      }
-    });
-    updateStatusBar();
+    sendTxModulation(txModeSelect.value, parseFloat(txFilterBwInput.value) || 0);
   });
 
   txMicButton.addEventListener('click', () => {
     if (isTransmitting) {
-      stopMicTx();
+      stopTx();
     } else {
       startMicTx();
     }
@@ -258,22 +248,24 @@ export function initTx() {
   });
 
   txFileConfirmButton.addEventListener('click', async () => {
-    if (isTransmitting) {
-      stopFileTx();
+    if (txStarting || isTransmitting) {
+      stopTx();
       return;
     }
 
     if (!selectedTxFile) return;
+    txStarting = true;
 
-    await initTxAudio();
-    if (txAudioCtx.state === 'suspended') {
-      await txAudioCtx.resume();
-    }
-
-    txChunkCount = 0;
-    console.log("[TX Client] Reading selected audio file: " + selectedTxFile.name + " (" + selectedTxFile.size + " bytes)...");
-    const arrayBuffer = await selectedTxFile.arrayBuffer();
     try {
+      await initTxAudio();
+      if (txAudioCtx.state === 'suspended') {
+        await txAudioCtx.resume();
+      }
+
+      txChunkCount = 0;
+      console.log("[TX Client] Reading selected audio file: " + selectedTxFile.name + " (" + selectedTxFile.size + " bytes)...");
+      const arrayBuffer = await selectedTxFile.arrayBuffer();
+
       console.log("[TX Client] Decoding audio data...");
       const audioBuffer = await txAudioCtx.decodeAudioData(arrayBuffer);
       console.log("[TX Client] Audio file decoded successfully. Duration: " + audioBuffer.duration.toFixed(2) + "s, Sample Rate: " + audioBuffer.sampleRate + "Hz.");
@@ -284,14 +276,14 @@ export function initTx() {
       txProcessor = new AudioWorkletNode(txAudioCtx, 'tx-processor');
       txProcessor.port.onmessage = (ev) => {
         if (!isTransmitting) return;
-        sendTxAudioChunk(ev.data);
+        sendTxAudioChunk(new Float32Array(ev.data));
       };
 
       source.connect(txProcessor);
       txProcessor.connect(txAudioCtx.destination);
 
       source.onended = () => {
-        stopFileTx();
+        stopTx();
       };
 
       txFileSource = source;
@@ -306,24 +298,17 @@ export function initTx() {
       txFileConfirmButton.textContent = "Stop File";
       txFileConfirmButton.style.backgroundColor = "#aa0000";
 
-      sendCommand({
-        type: 'SetTxState',
-        payload: {
-          active: true,
-          tx_gain_db: parseFloat(txGainSlider.value)
-        }
-      });
+      sendTxState(true);
     } catch (err) {
       console.error("Error decoding audio file:", err);
       alert("Could not decode the selected audio file.");
-      txFileInput.value = "";
-      selectedTxFile = null;
-      txFileConfirmButton.style.display = 'none';
+      stopTx();
+    } finally {
+      txStarting = false;
     }
   });
 
   if (syncRxTxCheckbox) {
-    // Sync is checked by default: disable TX selectors and run initial sync
     const syncedInit = syncRxTxCheckbox.checked;
     txModeSelect.disabled = syncedInit;
     txFilterBwInput.disabled = syncedInit;

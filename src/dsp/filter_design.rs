@@ -3,11 +3,23 @@ use std::f32::consts::PI;
 
 pub const SSB_FIR_TAPS: usize = 255;
 
+/// Generates a Hamming window of length `size`
+pub fn hamming_window(size: usize) -> Vec<f32> {
+    if size <= 1 {
+        return vec![1.0; size];
+    }
+    let denom = (size - 1) as f32;
+    (0..size)
+        .map(|i| 0.54 - 0.46 * (2.0 * PI * i as f32 / denom).cos())
+        .collect()
+}
+
 /// Designs a Hamming-windowed-sinc low-pass FIR: `num_taps` coefficients with normalized cutoff
 /// `fc` (cycles/sample, i.e. `cutoff_hz / fs`), scaled to unity DC gain (sum of taps = 1). Shared by the
 /// low-pass filters/decimators in this crate (`FmDecimator`, `FilterAudio`, and the `IqResampler`
 /// interpolation prototype, which rescales to sum of = L) so the window/normalization live in one place.
 pub fn design_lowpass_hamming(num_taps: usize, fc: f32) -> Vec<f32> {
+    let window = hamming_window(num_taps);
     let mut taps = vec![0.0f32; num_taps];
     let mut sum = 0.0f32;
     for i in 0..num_taps {
@@ -17,8 +29,7 @@ pub fn design_lowpass_hamming(num_taps: usize, fc: f32) -> Vec<f32> {
         } else {
             (2.0 * PI * fc * n).sin() / n
         };
-        let window = 0.54 - 0.46 * (2.0 * PI * i as f32 / (num_taps - 1) as f32).cos();
-        taps[i] = sinc * window;
+        taps[i] = sinc * window[i];
         sum += taps[i];
     }
     for tap in &mut taps {

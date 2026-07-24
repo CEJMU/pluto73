@@ -12,13 +12,15 @@
 
 module tx_strobe_gen (
     input  wire clk,
+    (* X_INTERFACE_IGNORE = "TRUE" *)
     input  wire [15:0] phase_inc, // 16-bit programmable phase increment
-    output wire enable
+    (* X_INTERFACE_IGNORE = "TRUE" *)
+    output wire strobe_out
 );
     // Phase Accumulator for Programmable Mode
     reg [16:0] accumulator = 17'b0;
     always @(posedge clk) begin
         accumulator <= accumulator[15:0] + phase_inc;
     end
-    assign enable = accumulator[16];
+    assign strobe_out = accumulator[16];
 endmodule

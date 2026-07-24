@@ -1,12 +1,10 @@
-use pluto::device::{GainMode, MAX_AUDIO_SAMPLES, PlutoDevice};
-use pluto::dsp::{FilterAudio, FmDecimator};
-use crate::test::dsp_helpers::{apply_hamming_window, write_wav_f32_mono};
+use crate::test::dsp_helpers::{AUDIO_SAMPLE_RATE, apply_hamming_window, write_wav_f32_mono};
 use num_complex::{Complex, Complex32};
 use orion_sdr::core::Block;
 use orion_sdr::demodulate::FmQuadratureDemod;
+use pluto::device::{GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, wait_for_uio_interrupt};
+use pluto::dsp::{FilterAudio, FmDecimator};
 use rustfft::FftPlanner;
-use std::io::Read;
-use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -106,26 +104,30 @@ pub fn run_fm_broadcast_quality(
         rssi_db
     );
 
+    // Primary criterion: a 19 kHz stereo pilot only exists on an actively-transmitting,
+    // correctly-tuned FM stereo station.
+    // Falls back to the (weaker, content-dependent) audio-band-vs-gap ratio for mono stations, which have no pilot.
+    let received = m.stereo || m.audio_snr_db > 6.0;
+
     println!("\n========================================");
-    if m.pilot_snr_db > 20.0 && m.ultrasonic_db < -30.0 && m.audio_snr_db > 15.0 {
-        println!("TEST RESULT: PASS");
-    } else {
-        println!("TEST RESULT: FAIL");
-    }
+    println!(
+        "STATION SUCCESSFULLY RECEIVED: {}",
+        if received { "YES" } else { "NO" }
+    );
     println!("========================================");
     println!(
-        "- Pilot SNR: {:.1} dB (Threshold: >20.0 dB)",
+        "- Stereo Pilot Detected: {} (Pilot SNR {:.1} dB, threshold >20.0 dB) [primary evidence]",
+        if m.stereo { "Yes" } else { "No" },
         m.pilot_snr_db
     );
     println!(
-        "- Ultrasonic Noise: {:.1} dB (Threshold: < -30.0 dB)",
-        m.ultrasonic_db
-    );
-    println!(
-        "- Audio SNR: {:.1} dB (Threshold: > 15.0 dB)",
+        "- Audio-band presence (vs. 16-18kHz gap): {:.1} dB (informational, mono-station fallback threshold >6.0 dB)",
         m.audio_snr_db
     );
-    println!("- Stereo Detected: {}", if m.stereo { "Yes" } else { "No" });
+    println!(
+        "- Ultrasonic band level: {:.1} dB (informational, absolute level not a ratio)",
+        m.ultrasonic_db
+    );
     println!("========================================\n");
 
     // --- Optional WAV outputs ---
@@ -133,7 +135,7 @@ pub fn run_fm_broadcast_quality(
         // Listening WAV: replicate the live FM audio path (AudioProcessor::FM in dsp.rs)
         let audio = fm_composite_to_audio(&composite);
         let audio_path = format!("{}_audio.wav", prefix);
-        write_wav_f32_mono(&audio_path, &audio, 48_000, true)?;
+        write_wav_f32_mono(&audio_path, &audio, AUDIO_SAMPLE_RATE, true)?;
         println!(
             "\nwrote {} ({} samples, 48 kHz mono)",
             audio_path,
@@ -178,18 +180,9 @@ fn capture_audio_dma_iq(
             let mut sys = system.lock().unwrap();
             sys.ensure_dma_running();
         }
-        let raw_fd = uio_file.as_raw_fd();
-        let mut fds = [libc::pollfd {
-            fd: raw_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-        if unsafe { libc::poll(fds.as_mut_ptr(), 1, 200) } <= 0 {
-            continue;
-        }
-        let mut int_info = [0u8; 4];
-        if uio_file.read_exact(&mut int_info).is_err() {
-            continue;
+        match wait_for_uio_interrupt(&mut uio_file, 200) {
+            Ok(Some(_)) => {}
+            _ => continue,
         }
         let n = {
             let mut sys = system.lock().unwrap();
@@ -228,31 +221,39 @@ fn analyze_composite(composite: &[f32], fs: f32) -> Metrics {
         };
     }
 
-    let mut buf: Vec<Complex<f32>> = composite[..n]
-        .iter()
-        .map(|&x| Complex::new(x, 0.0))
-        .collect();
-    apply_hamming_window(&mut buf);
-
+    // Average the magnitude spectrum over every non-overlapping n-sample window in the capture
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(n);
-    fft.process(&mut buf);
+    let mut mag_acc = vec![0.0f32; n / 2 + 1];
+    let mut n_windows = 0usize;
+    for chunk in composite.chunks_exact(n) {
+        let mut buf: Vec<Complex<f32>> = chunk.iter().map(|&x| Complex::new(x, 0.0)).collect();
+        apply_hamming_window(&mut buf);
+        fft.process(&mut buf);
+        for (acc, c) in mag_acc.iter_mut().zip(buf[..=n / 2].iter()) {
+            *acc += c.norm() / n as f32;
+        }
+        n_windows += 1;
+    }
+    let mags: Vec<f32> = mag_acc.into_iter().map(|m| m / n_windows as f32).collect();
 
     let bin_bw = fs / n as f32; // Hz per bin
     let f_to_bin = |f: f32| ((f / bin_bw).round() as usize).min(n / 2);
-    let mags: Vec<f32> = buf[..=n / 2].iter().map(|c| c.norm() / n as f32).collect();
+    const MAG_FLOOR: f32 = 1e-15;
+
+    let gap_bin_lo = f_to_bin(16000.0);
+    let gap_bin_hi = f_to_bin(18000.0);
+    let gap_noise = (gap_bin_lo..=gap_bin_hi).map(|k| mags[k]).sum::<f32>()
+        / (gap_bin_hi - gap_bin_lo + 1).max(1) as f32;
 
     let (plo, phi) = (f_to_bin(18850.0), f_to_bin(19150.0));
     let pilot_peak = (plo..=phi).map(|k| mags[k]).fold(0.0f32, f32::max);
-    let pilot_noise = (f_to_bin(16000.0)..=f_to_bin(18000.0))
-        .map(|k| mags[k])
-        .sum::<f32>()
-        / (f_to_bin(18000.0) - f_to_bin(16000.0) + 1).max(1) as f32;
-    let pilot_snr_db = if pilot_noise > 1e-6 {
-        20.0 * (pilot_peak / pilot_noise).log10()
+    let pilot_snr_db = if gap_noise > MAG_FLOOR {
+        20.0 * (pilot_peak / gap_noise).log10()
     } else {
         0.0
     };
+    // The 19 kHz stereo pilot only exists on an actively-transmitting, correctly-tuned FM stereo station
     let stereo = pilot_snr_db > 20.0;
 
     let noise_bin_start = f_to_bin(60000.0);
@@ -261,7 +262,7 @@ fn analyze_composite(composite: &[f32], fs: f32) -> Metrics {
         .map(|k| mags[k])
         .sum::<f32>()
         / (noise_bin_end - noise_bin_start + 1).max(1) as f32;
-    let ultrasonic_db = 20.0 * avg_noise.max(1e-6).log10();
+    let ultrasonic_db = 20.0 * avg_noise.max(MAG_FLOOR).log10();
 
     let audio_bin_start = f_to_bin(300.0);
     let audio_bin_end = f_to_bin(15000.0);
@@ -269,8 +270,8 @@ fn analyze_composite(composite: &[f32], fs: f32) -> Metrics {
         .map(|k| mags[k])
         .sum::<f32>()
         / (audio_bin_end - audio_bin_start + 1).max(1) as f32;
-    let audio_snr_db = if avg_noise > 1e-6 {
-        20.0 * (avg_audio / avg_noise).log10()
+    let audio_snr_db = if gap_noise > MAG_FLOOR {
+        20.0 * (avg_audio / gap_noise).log10()
     } else {
         0.0
     };
