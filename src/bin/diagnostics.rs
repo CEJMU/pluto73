@@ -214,6 +214,18 @@ fn main() {
         }
         std::process::exit(0);
     }
+    if args.iter().any(|arg| arg == "--test-spec-tx-twotone") {
+        if let Err(err) = test::spectral_analysis::run_spec_tx_twotone(loopback) {
+            eprintln!("Spectral TX two-tone IMD3 test failed: {}", err);
+        }
+        std::process::exit(0);
+    }
+    if args.iter().any(|arg| arg == "--test-spec-tx-radiated") {
+        if let Err(err) = test::spectral_analysis::run_spec_tx_radiated(loopback) {
+            eprintln!("Radiated TX characterisation failed: {}", err);
+        }
+        std::process::exit(0);
+    }
     if let Some(pos) = args.iter().position(|arg| arg == "--test-spur-probe") {
         let fs_hz: i64 = args
             .get(pos + 1)

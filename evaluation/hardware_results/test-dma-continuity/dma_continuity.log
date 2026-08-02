@@ -1,0 +1,22 @@
+# command: /root/diagnostics --test-dma-continuity
+=== AUDIO DMA CONTINUITY / TEARING TEST ===
+Cyclic TX tone (continuous, no TX-push seams);
+checks RX audio-DMA phase continuity for buffer tearing/drops.
+
+Cyclic 3000 Hz tone pushed (loops in hardware).
+Capturing 5s of audio DMA at 240 kHz...
+  Captured 74 DMA reads, 1212416 samples (5.05s at 240 kHz)
+  samples=1212416, RMS=1286, tone=3017 Hz (median inc 0.07897 rad/samp), phase-noise sigma=0.00482 rad, threshold=0.3500 rad
+  74 buffers captured; ignoring first 2 (startup settling).
+  discontinuities (after settle): boundary-aligned=0  mid-buffer=0  (mid spread over 0/72 buffers)
+
+========================================
+TEST RESULT: PASS
+========================================
+- Tearing events (mid-buffer): 0
+- Dropped frames (boundary-aligned): 0
+- Distinct affected buffers: 0/72
+========================================
+
+
+=== DMA CONTINUITY TEST COMPLETE ===

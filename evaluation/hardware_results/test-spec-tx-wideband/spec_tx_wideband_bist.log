@@ -1,0 +1,61 @@
+# command: /root/diagnostics --test-spec-tx-wideband --loopback
+=== TX WIDEBAND SPECTRUM (raw ADC, true transmitted RF) ===
+
+--- Run configuration ---
+  TX/RX LO      : 2400.100 MHz
+  Sample rate   : 3.840 MHz
+  TX DDS offset : +1000.000 kHz
+  RX gain       : 40.0 dB (manual)
+  Signal path   : AD9361 BIST digital loopback (DAC/analog/ADC bypassed)
+  Build         : pluto v0.1.0
+
+AD9361 BIST digital loopback ENABLED (TX->RX, RF path bypassed)
+Peak ADC sample: 56 (12-bit full scale +/-2047 -> 3% of FS)  (headroom ok)
+
+Wanted tone is on: USB (+1001 kHz) - correct for USB mode
+  Resolution: 4.3 bins at 234.4 Hz/bin - carrier and opposite-sideband probes NOT resolved.
+  The values below are the analysis window's leakage floor, i.e. UPPER BOUNDS, not
+  measurements. Use --test-dma-carrier-offset (multi-second capture, sub-Hz bins,
+  -100 dBc floor) for the true in-channel figures.
+
+  tone                 0.0 dBc (reference)
+  carrier (LO+1000 kHz): -56.0 dBc   ok
+  opp-sideband         : -59.0 dBc   ok
+
+Spectrum around the signal (dBc vs the tone):
+  LO  +994 kHz   -69.5 dBc 
+  LO  +995 kHz   -68.0 dBc 
+  LO  +996 kHz   -66.3 dBc 
+  LO  +997 kHz   -64.4 dBc 
+  LO  +998 kHz   -62.0 dBc 
+  LO  +999 kHz   -59.0 dBc  <lsb
+  LO +1000 kHz   -56.0 dBc # <CARRIER
+  LO +1001 kHz     0.0 dBc #################### <usb(wanted)
+  LO +1002 kHz   -56.3 dBc #
+  LO +1003 kHz   -58.2 dBc 
+  LO +1004 kHz   -62.1 dBc 
+  LO +1005 kHz   -64.5 dBc 
+  LO +1006 kHz   -66.3 dBc 
+
+Exported raw ADC 16k close-in spectrum CSV to ssb_16k_spectrum_bist.csv
+Exported raw ADC 16k full wideband spectrum CSV to ssb_16k_wideband_spectrum_bist.csv
+
+Spur scan (peaks > 20 dB over noise floor, excluding the wanted 999-1001 kHz signal):
+  offset from LO       level       source
+       -255.0 kHz    -58.2 dBc   TX-generated
+      -1583.0 kHz    -60.4 dBc   TX-generated
+      -1091.0 kHz    -61.1 dBc   TX-generated
+       +713.0 kHz    -61.4 dBc   TX-generated
+      -1255.1 kHz    -62.2 dBc   TX-generated
+      -1747.0 kHz    -62.3 dBc   TX-generated
+        -90.9 kHz    -62.5 dBc   TX-generated
+      -1731.1 kHz    -62.8 dBc   TX-generated
+      +1533.0 kHz    -63.1 dBc   TX-generated
+      -1911.1 kHz    -63.1 dBc   TX-generated
+       +797.1 kHz    -63.5 dBc   TX-generated
+      -1403.0 kHz    -63.5 dBc   TX-generated
+        +57.0 kHz    -63.8 dBc   TX-generated
+       -747.0 kHz    -63.9 dBc   TX-generated
+      -1650.9 kHz    -64.0 dBc   TX-generated
+
+=== TX WIDEBAND COMPLETE ===

@@ -1,0 +1,70 @@
+# command: /root/diagnostics --test-spec-tx-radiated
+=== RADIATED TX SIGNAL (software modulator -> FPGA TX -> raw wideband ADC) ===
+
+TX: real modulator + FPGA interpolator/DDS/DAC, cyclic DMA (cannot starve)
+RX: stock wideband path, burst gate bypassed - no custom receive DSP in the loop
+
+--- Run configuration ---
+  TX/RX LO      : 2400.100 MHz
+  Sample rate   : 3.840 MHz
+  TX DDS offset : +1000.000 kHz
+  RX gain       : 40.0 dB (manual)
+  Signal path   : RF cable loopback
+  Build         : pluto v0.1.0
+
+  Resolution: 273.1 bins at 3.7 Hz/bin - carrier and sideband probes resolved.
+
+
+Capturing (5 x ~1.4 s)...
+
+Peak ADC: silence 25, single 411 (20.1% FS), two-tone 394 (19.2% FS), TX off 21
+Reference (wanted tone, single-tone case): 194547376.0 magnitude
+
+--- SILENCE (modulator fed zeros; what radiates with no audio) ---
+  carrier   @ LO+1000 kHz :  -94.7 dBc
+  LO leak   @ LO          :  -70.5 dBc
+  noise ref @ LO+1020 kHz :  -95.7 dBc
+
+--- SINGLE TONE (1 kHz USB) ---
+  wanted    @ LO+1001.0 kHz :    0.0 dBc  (reference)
+  carrier   @ LO+1000.0 kHz :  -72.1 dBc
+  opp sideb @ LO+999.0 kHz :  -81.3 dBc
+  LO image  @ LO-1001.0 kHz :  -90.1 dBc  <-- analog quadrature image
+  img carr  @ LO-1000.0 kHz :  -89.5 dBc
+  noise ref @ LO+1020 kHz :  -86.8 dBc
+
+--- TWO TONE (700 Hz + 1900 Hz, each at half amplitude) ---
+  f1        @ LO+1000.7 kHz :    0.0 dBc  (reference)
+  f2        @ LO+1001.9 kHz :   -2.0 dBc
+  carrier   @ LO+1000.0 kHz :  -69.5 dBc
+  IMD3 low  @ LO+999.5 kHz :  -61.2 dBc
+  IMD3 high @ LO+1003.1 kHz :  -64.7 dBc
+  IMD5 low  @ LO+998.3 kHz :  -65.1 dBc
+  IMD5 high @ LO+1004.3 kHz :  -65.9 dBc
+  noise ref @ LO+1020 kHz :  -94.6 dBc
+
+--- SPUR ATTRIBUTION (RX gain 40 dB vs 30 dB, peak ADC 411 vs 136) ---
+  Ratio unchanged => the product is already on the incoming RF, i.e. RADIATED.
+  Ratio improves  => the receiver made it from the signal, not transmitted.
+        offset     level  TX-muted  low-gain    delta  verdict
+    -1001.0 kHz    -90.1     -97.7     -82.5     +7.6  inconclusive (worse at low gain) quadrature image
+    -1838.0 kHz    -46.6     -82.6     -55.7     -9.1  receiver artefact - NOT transmitted 
+    +1838.0 kHz    -48.9     -89.1     -59.8    -10.9  receiver artefact - NOT transmitted 
+     +601.0 kHz    -49.6    -107.4     -49.8     -0.3  RADIATED 
+    +1401.0 kHz    -52.1     -93.3     -52.3     -0.2  RADIATED 
+     -255.0 kHz    -58.4    -105.5     -58.2     +0.2  RADIATED 
+     +901.0 kHz    -60.7    -101.4     -61.5     -0.8  RADIATED 
+      -91.0 kHz    -61.0    -100.5     -60.9     +0.0  RADIATED 
+
+--- REPEATABILITY (5 consecutive single-tone captures) ---
+                  line      min      max   spread   runs
+               carrier    -76.1    -71.7      4.4   [-73.8, -71.7, -76.1, -75.8, -74.8]  @ +1000.0 kHz
+          opp sideband    -89.0    -81.7      7.3   [-83.9, -81.7, -82.4, -88.7, -89.0]  @ +999.0 kHz
+      quadrature image    -85.7    -81.9      3.8   [-81.9, -84.9, -84.7, -85.7, -82.9]  @ -1001.0 kHz
+    largest other spur    -46.8    -46.6      0.2   [-46.8, -46.6, -46.6, -46.8, -46.7]  @ -1838.0 kHz
+Exported /root/radiated_tone_rf.csv (full span, RBW 3.66 Hz, max-hold)
+Exported /root/radiated_closein_tone_rf.csv (+-10 kHz, RBW 3.66 Hz, max-hold)
+Exported /root/radiated_twotone_rf.csv (full span, RBW 3.66 Hz, max-hold)
+Exported /root/radiated_closein_twotone_rf.csv (+-10 kHz, RBW 3.66 Hz, max-hold)
+
+=== RADIATED TX CHARACTERISATION COMPLETE ===

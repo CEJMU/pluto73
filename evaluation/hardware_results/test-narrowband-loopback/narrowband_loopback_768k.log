@@ -1,0 +1,29 @@
+# command: /root/diagnostics --test-narrowband-loopback 768000
+=== LOW-SPAN SSB TX->RX LOOPBACK (AD9361 FIR) ===
+
+rate 767999 Hz (FIR ON), audio DMA 47999 Hz
+
+  transmit_usb_tone: fs = 767999 Hz, dma_fs = 48000 Hz (resampler bypassed)
+recovered 98304 audio samples (2.05s @ 48000 Hz)
+dominant recovered tone: 1000.5 Hz (expected 1000 Hz, err 0.5 Hz), peak/spur 42.3 dB
+  (analysis resolution 1.46 Hz/bin - the frequency error is quantised to that grid)
+  what limits the ratio above:
+       991.7 Hz   -42.3 dBc   analysis-window skirt, NOT a spur
+      1009.3 Hz   -45.2 dBc   analysis-window skirt, NOT a spur
+       977.1 Hz   -49.9 dBc   analysis-window skirt, NOT a spur
+  excluding +-100 Hz around the tone, the true peak-to-spur is 63.2 dB:
+      1101.6 Hz   -63.2 dBc   unrelated line
+       886.2 Hz   -63.7 dBc   unrelated line
+       870.1 Hz   -64.7 dBc   unrelated line
+      1117.7 Hz   -66.0 dBc   unrelated line
+       855.5 Hz   -67.7 dBc   unrelated line
+
+========================================
+TEST RESULT: PASS
+========================================
+- Target Span: 0.768 MHz
+- Dominant Tone: 1000.5 Hz (Expected: 1000.0 Hz)
+- Frequency Error: 0.5 Hz
+- Peak/Spur Ratio: 42.3 dB (Threshold: >12.0 dB)
+========================================
+

@@ -1,0 +1,51 @@
+# command: /root/diagnostics --test-dma-carrier-offset --loopback
+=== TX CARRIER / SIDEBAND PROBE (audio DMA, off-DC carrier) ===
+
+--- Run configuration ---
+  TX/RX LO      : 2400.100 MHz
+  Sample rate   : 3.840 MHz
+  TX DDS offset : +50.000 kHz
+  RX gain       : 40.0 dB (manual)
+  Signal path   : AD9361 BIST digital loopback (DAC/analog/ADC bypassed)
+  Build         : pluto v0.1.0
+
+AD9361 BIST digital loopback ENABLED (TX->RX, RF path bypassed)
+--- Keyed, silence (static DAC bias) ---
+  Captured 44 DMA reads, 720896 samples (3.00s at 240 kHz)
+  carrier +5 kHz         0.0000
+  noise +20 kHz          0.0000
+
+--- Keyed, 1 kHz USB tone (production modulator) ---
+  Captured 60 DMA reads, 983040 samples (4.10s at 240 kHz)
+  target              magnitude        dBc
+  wanted +6 kHz         64.1063       +0.0
+  carrier +5 kHz         0.0105      -75.7
+  opposite +4 kHz        0.0021      -89.6
+  DC (blocked)           0.5661      -41.1
+  RX LO leak -45 kHz     0.7457      -38.7
+  noise +20 kHz          0.0015      -92.5
+
+Carrier split (silent vs modulated):
+  static DAC/LO bias : 0.0000 (-216.1 dBc)
+  during modulation  : 0.0105 (-75.7 dBc)
+Exported spectrum to ssb_carrier_probe_tone_bist.csv (4097 rows, RBW 0.244 Hz, 10 bins max-held per row)
+
+--- Keyed, 700 Hz + 1900 Hz Two-Tone (off-DC audio DMA probe) ---
+  Captured 60 DMA reads, 983040 samples (4.10s at 240 kHz)
+  target                  magnitude        dBc
+  f1 tone +5.7 kHz          31.6352       +0.0
+  f2 tone +6.9 kHz          26.6220       -1.5
+  carrier +5.0 kHz           0.0120      -68.4
+  IMD3 low +4.5 kHz          0.0073      -72.8
+  IMD3 up +8.1 kHz           0.0056      -75.0
+  IMD5 low +3.3 kHz          0.0062      -74.1
+  IMD5 up +9.3 kHz           0.0104      -69.7
+  noise +20 kHz              0.0006      -94.6
+
+Audio-DMA Off-DC IMD3 Linearity Evaluation:
+  IMD3 Lower (2*f1-f2, -500 Hz rel) : -72.8 dBc
+  IMD3 Upper (2*f2-f1, +3.1 kHz rel): -75.0 dBc
+  VERDICT: PASS (EXCELLENT LINEARITY: IMD3 <= -40.0 dBc)
+Exported spectrum to ssb_carrier_probe_twotone_bist.csv (4097 rows, RBW 0.244 Hz, 10 bins max-held per row)
+
+=== TX CARRIER / SIDEBAND PROBE COMPLETE ===

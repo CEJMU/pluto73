@@ -1,0 +1,26 @@
+# command: /root/diagnostics --test-fm-broadcast-quality 99300000 5 fm_993
+# NOTE: captured 2026-07-28, the one log here not from the current campaign. Re-running it
+# needs a real antenna in place of the bench cable loopback, and nothing in the FM path --
+# fm_broadcast.rs, dsp/rx.rs, the orion-sdr dependency, the helpers it uses, or the HDL --
+# has changed since.
+=== LIVE FM STATION QUALITY TEST ===
+station 99.300 MHz, 5.0 s capture, AGC-fast (real antenna signal)
+
+LO 98.340 MHz + DDS -960 kHz -> station at DC; composite rate 240 kHz
+Captured 1212416 IQ samples (5.05 s at 240 kHz)
+
+station 99.300 MHz, 5.0 s, AGC-fast, RX gain 47.0 dB (RSSI 69.0 dB)
+
+========================================
+STATION SUCCESSFULLY RECEIVED: YES
+========================================
+- Stereo Pilot Detected: Yes (Pilot SNR 44.9 dB, threshold >20.0 dB) [primary evidence]
+- Audio-band presence (vs. 16-18kHz gap): 13.0 dB (informational, mono-station fallback threshold >6.0 dB)
+- Ultrasonic band level: -165.1 dB (informational, absolute level not a ratio)
+========================================
+
+
+wrote fm_993_audio.wav (242483 samples, 48 kHz mono)
+wrote fm_993_composite.wav (1212416 samples, 240 kHz mono composite)
+
+=== FM QUALITY TEST COMPLETE ===

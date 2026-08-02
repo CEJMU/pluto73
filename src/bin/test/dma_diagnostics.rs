@@ -1,5 +1,6 @@
 use crate::test::dsp_helpers::{
-    AUDIO_SAMPLE_RATE, LoopbackGuard, fft_mags_i16, write_wav_i16_stereo,
+    AUDIO_SAMPLE_RATE, LoopbackGuard, capture_tag, export_16k_ssb_spectrum_csv, fft_mags_i16,
+    print_run_config, write_wav_i16_stereo,
 };
 use pluto::device::{
     GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, PlutoTxDevice, wait_for_uio_interrupt,
@@ -11,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn init_channels_cyclic(tx: &mut PlutoTxDevice) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn init_channels_cyclic(
+    tx: &mut PlutoTxDevice,
+) -> Result<(), Box<dyn std::error::Error>> {
     tx.buffer = None;
     let (i_name, q_name) = match tx.antenna {
         1 => ("voltage2", "voltage3"),
@@ -34,7 +37,7 @@ fn init_channels_cyclic(tx: &mut PlutoTxDevice) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn write_buffer_once(
+pub(crate) fn write_buffer_once(
     tx: &mut PlutoTxDevice,
     i_samples: &[i16],
     q_samples: &[i16],
@@ -227,11 +230,13 @@ pub fn run_carrier_offset_probe(loopback: bool) -> Result<(), Box<dyn std::error
     let mut tx = pluto.tx;
     let mut system = pluto.system;
 
-    let lo_hz: i64 = 900_000_000;
+    // 2400.100 MHz, inside the QO-100 narrowband uplink passband
+    let lo_hz: i64 = 2_400_100_000;
     let fs_hz: i64 = 3_840_000;
     let antenna: u8 = 0;
     let cic_decimation: u32 = 4;
     let dma_fs = (fs_hz / cic_decimation as i64 / 4) as f64; // 240 kHz
+    print_run_config(lo_hz, fs_hz, 50_000.0, 40.0, loopback);
 
     system.rx_apply_dsp_config(antenna, fs_hz);
     system.tx_apply_dsp_config(tx.antenna, fs_hz as f64);
@@ -374,6 +379,107 @@ pub fn run_carrier_offset_probe(loopback: bool) -> Result<(), Box<dyn std::error
         "  during modulation  : {:.4} ({:+.1} dBc)",
         carrier_mod,
         20.0 * (carrier_mod.max(1e-9) / wanted).log10()
+    );
+
+    let _ = export_16k_ssb_spectrum_csv(
+        &modulated.0,
+        &modulated.1,
+        dma_fs,
+        5000.0,
+        &format!("ssb_carrier_probe_tone_{}.csv", capture_tag(loopback)),
+    );
+
+    // --- Keyed, 700 Hz + 1900 Hz two-tone (off-DC audio DMA probe) ---
+    println!("\n--- Keyed, 700 Hz + 1900 Hz Two-Tone (off-DC audio DMA probe) ---");
+    tx.set_gain(0.0)?;
+    let stop_tx = Arc::new(AtomicBool::new(false));
+    let stop_tx2 = stop_tx.clone();
+    let tx_handle = thread::spawn(move || {
+        let mut modulator = TxModulator::new(TxMode::USB, 3_000.0, 3_840_000.0);
+        let chunk_size = 4096;
+        let mut t_audio = 0u64;
+        let f1 = 700.0f32;
+        let f2 = 1900.0f32;
+        while !stop_tx2.load(Ordering::Relaxed) {
+            let audio: Vec<f32> = (0..chunk_size)
+                .map(|n| {
+                    let t = (t_audio + n as u64) as f32 / AUDIO_SAMPLE_RATE as f32;
+                    0.5 * (2.0 * std::f32::consts::PI * f1 * t).sin()
+                        + 0.5 * (2.0 * std::f32::consts::PI * f2 * t).sin()
+                })
+                .collect();
+            t_audio += chunk_size as u64;
+            let mut out_i = Vec::new();
+            let mut out_q = Vec::new();
+            modulator.process_chunk(&audio, &mut out_i, &mut out_q);
+            let _ = tx.write_buffer(&out_i, &out_q);
+        }
+        tx
+    });
+    thread::sleep(Duration::from_millis(500));
+    let twotone_mod = capture_audio_dma(&system, &stop_flag, Duration::from_secs(4))?;
+    stop_tx.store(true, Ordering::Relaxed);
+    let mut tx = tx_handle.join().map_err(|_| "TX thread panicked")?;
+    let _ = tx.set_gain(-89.75);
+
+    let twotone_res = measure(
+        &twotone_mod.0,
+        &twotone_mod.1,
+        dma_fs,
+        &[
+            ("f1 tone +5.7 kHz", 5700.0),
+            ("f2 tone +6.9 kHz", 6900.0),
+            ("carrier +5.0 kHz", 5000.0),
+            ("IMD3 low +4.5 kHz", 4500.0),
+            ("IMD3 up +8.1 kHz", 8100.0),
+            ("IMD5 low +3.3 kHz", 3300.0),
+            ("IMD5 up +9.3 kHz", 9300.0),
+            ("noise +20 kHz", 20000.0),
+        ],
+    );
+
+    let ref_tone = twotone_res[0].1.max(twotone_res[1].1).max(1e-9);
+    println!("  {:22} {:>10}  {:>9}", "target", "magnitude", "dBc");
+    for (name, mag) in &twotone_res {
+        println!(
+            "  {:22} {:10.4}  {:+9.1}",
+            name,
+            mag,
+            20.0 * (mag / ref_tone).log10()
+        );
+    }
+
+    let imd3_l_dbc = 20.0 * (twotone_res[3].1 / ref_tone).log10();
+    let imd3_u_dbc = 20.0 * (twotone_res[4].1 / ref_tone).log10();
+    let worst_dma_imd3 = imd3_l_dbc.max(imd3_u_dbc);
+
+    println!("\nAudio-DMA Off-DC IMD3 Linearity Evaluation:");
+    println!(
+        "  IMD3 Lower (2*f1-f2, -500 Hz rel) : {:.1} dBc",
+        imd3_l_dbc
+    );
+    println!(
+        "  IMD3 Upper (2*f2-f1, +3.1 kHz rel): {:.1} dBc",
+        imd3_u_dbc
+    );
+    if worst_dma_imd3 <= -40.0 {
+        println!("  VERDICT: PASS (EXCELLENT LINEARITY: IMD3 <= -40.0 dBc)");
+    } else if worst_dma_imd3 <= -25.0 {
+        println!("  VERDICT: PASS (GOOD AMATEUR SSB LINEARITY: IMD3 <= -25.0 dBc)");
+    } else {
+        println!("  VERDICT: FAIL (POOR LINEARITY: IMD3 > -25.0 dBc)");
+    }
+
+    // Export the two-tone spectrum from this probe as well. At the audio-DMA rate a 16k transform
+    // gives 15 Hz bins, so the IMD3 products sit 82 bins from their fundamentals and are fully
+    // resolved; the same products in the 3.84 MHz burst capture are 5 bins out and read 14 dB
+    // high. This is the capture a linearity figure should be drawn from.
+    let _ = export_16k_ssb_spectrum_csv(
+        &twotone_mod.0,
+        &twotone_mod.1,
+        dma_fs,
+        5000.0,
+        &format!("ssb_carrier_probe_twotone_{}.csv", capture_tag(loopback)),
     );
 
     println!("\n=== TX CARRIER / SIDEBAND PROBE COMPLETE ===");

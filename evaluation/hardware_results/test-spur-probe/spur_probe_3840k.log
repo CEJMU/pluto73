@@ -1,0 +1,95 @@
+# command: /root/diagnostics --test-spur-probe 3840000
+=== SPUR PROBE (continuous ungated raw ADC) ===
+
+  Using sample rate: 3840000 Hz
+case a: DDS +50 kHz, full drive (tone at LO+51 kHz)
+  wrote /root/spur_a.bin (1048576 samples, peak ADC 604)
+    tone at 51.0 kHz; sidebands relative to it:
+       -19.2 kHz :  -79.1 dBc
+        -9.6 kHz :  -90.2 dBc
+        +9.6 kHz :  -92.0 dBc
+       +19.2 kHz :  -92.5 dBc
+      floor    : -100.8 dBc (median bin)
+case b: DDS +37 kHz, full drive (tone at LO+38 kHz)
+  wrote /root/spur_b.bin (1048576 samples, peak ADC 604)
+    tone at 38.0 kHz; sidebands relative to it:
+       -19.2 kHz :  -89.5 dBc
+        -9.6 kHz :  -89.7 dBc
+        +9.6 kHz :  -86.0 dBc
+       +19.2 kHz :  -93.2 dBc
+      floor    : -100.4 dBc (median bin)
+case c: DDS +50 kHz, -20 dB drive
+  wrote /root/spur_c.bin (1048576 samples, peak ADC 87)
+    tone at 51.0 kHz; sidebands relative to it:
+       -19.2 kHz :  -58.9 dBc
+        -9.6 kHz :  -81.2 dBc
+        +9.6 kHz :  -83.0 dBc
+       +19.2 kHz :  -81.5 dBc
+      floor    :  -87.3 dBc (median bin)
+case d: TX muted (RX-side floor)
+  wrote /root/spur_d.bin (1048576 samples, peak ADC 23)
+    tone at 31.8 kHz; sidebands relative to it:
+       -19.2 kHz :  -22.2 dBc
+        -9.6 kHz :  -20.1 dBc
+        +9.6 kHz :  -19.9 dBc
+       +19.2 kHz :  -21.7 dBc
+      floor    :  -27.7 dBc (median bin)
+case e: AD9361 digital loopback (BIST), DDS +50 kHz, full drive
+  wrote /root/spur_e.bin (1048576 samples, peak ADC 56)
+    tone at 51.0 kHz; sidebands relative to it:
+       -19.2 kHz : -107.3 dBc
+        -9.6 kHz : -101.1 dBc
+        +9.6 kHz : -100.1 dBc
+       +19.2 kHz : -110.1 dBc
+      floor    : -116.2 dBc (median bin)
+case f: constant DC I/Q feed (no modulator), RF path, carrier at LO+50 kHz
+  wrote /root/spur_f.bin (1048576 samples)
+    tone at 50.0 kHz; sidebands relative to it:
+       -19.2 kHz :  -90.8 dBc
+        -9.6 kHz :  -89.2 dBc
+        +9.6 kHz :  -90.4 dBc
+       +19.2 kHz :  -90.9 dBc
+      floor    :  -99.6 dBc (median bin)
+case g: constant DC I/Q feed, AD9361 digital loopback
+  wrote /root/spur_g.bin (1048576 samples)
+    tone at 50.0 kHz; sidebands relative to it:
+       -19.2 kHz : -143.9 dBc
+        -9.6 kHz : -141.0 dBc
+        +9.6 kHz : -142.2 dBc
+       +19.2 kHz : -146.5 dBc
+      floor    : -147.8 dBc (median bin)
+case h: 2 kHz audio tone, AD9361 digital loopback (PM-depth-vs-f_audio scaling)
+  wrote /root/spur_h.bin (1048576 samples, peak ADC 51)
+    tone at 52.0 kHz; sidebands relative to it:
+       -19.2 kHz : -105.9 dBc
+        -9.6 kHz : -105.6 dBc
+        +9.6 kHz : -104.4 dBc
+       +19.2 kHz : -102.7 dBc
+      floor    : -112.8 dBc (median bin)
+case i: 500 Hz audio tone, AD9361 digital loopback
+  wrote /root/spur_i.bin (1048576 samples, peak ADC 50)
+    tone at 50.5 kHz; sidebands relative to it:
+       -19.2 kHz : -106.8 dBc
+        -9.6 kHz :  -95.5 dBc
+        +9.6 kHz :  -93.5 dBc
+       +19.2 kHz : -105.9 dBc
+      floor    : -116.4 dBc (median bin)
+case j: DSP BYPASS mode (enabled=0), AD9361 digital loopback, 1 kHz tone
+  wrote /root/spur_j.bin (1048576 samples, peak ADC 931)
+    tone at 160.0 kHz; sidebands relative to it:
+       -19.2 kHz :  -31.7 dBc
+        -9.6 kHz :  -28.7 dBc
+        +9.6 kHz :  -29.4 dBc
+       +19.2 kHz :  -32.0 dBc
+      floor    :  -66.3 dBc (median bin)
+case k: DSP BYPASS mode (enabled=0), RF loopback path, 1 kHz tone
+  wrote /root/spur_k.bin (1048576 samples, peak ADC 2048)
+    tone at 160.0 kHz; sidebands relative to it:
+       -19.2 kHz :  -29.0 dBc
+        -9.6 kHz :  -27.0 dBc
+        +9.6 kHz :  -28.8 dBc
+       +19.2 kHz :  -30.3 dBc
+      floor    :  -43.0 dBc (median bin)
+
+=== SPUR PROBE COMPLETE ===
+scp the /root/spur_*.bin files to the host for FFT analysis.

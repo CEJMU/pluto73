@@ -1,0 +1,31 @@
+# command: /root/diagnostics --test-rf-raw-loopback
+=== PLUTO SDR RAW RF LOOPBACK TEST ===
+Opening PlutoDevice...
+Initializing FPGA configurations...
+Configuring RX (LO: 900 MHz, Rate: 3.84 MHz)...
+RX set to Manual Gain (40.0 dB)
+Configuring TX...
+Starting TX/RX loopback...
+Transmitting 1 kHz tone at 48 kHz input sample rate...
+Expected loopback tone at RX: LO + 51 kHz (due to +50 kHz FPGA DDS shift + 1 kHz baseband)
+Iteration   0 | Carrier 50 kHz:    78.7 | DUC 51 kHz:   749.1 | Bypass 1 kHz:     1.8 | DC:     4.7 | Noise 100 kHz:     1.8
+Iteration  15 | Carrier 50 kHz:    64.0 | DUC 51 kHz:   735.7 | Bypass 1 kHz:     1.3 | DC:     1.2 | Noise 100 kHz:     1.4
+Iteration  30 | Carrier 50 kHz:    63.9 | DUC 51 kHz:   734.7 | Bypass 1 kHz:     1.4 | DC:     1.1 | Noise 100 kHz:     1.4
+Iteration  45 | Carrier 50 kHz:    63.8 | DUC 51 kHz:   733.8 | Bypass 1 kHz:     1.4 | DC:     1.9 | Noise 100 kHz:     1.4
+Iteration  60 | Carrier 50 kHz:    63.8 | DUC 51 kHz:   733.7 | Bypass 1 kHz:     1.3 | DC:     2.8 | Noise 100 kHz:     1.4
+Iteration  75 | Carrier 50 kHz:    63.7 | DUC 51 kHz:   732.8 | Bypass 1 kHz:     1.3 | DC:     1.1 | Noise 100 kHz:     1.4
+Iteration  90 | Carrier 50 kHz:    63.6 | DUC 51 kHz:   732.5 | Bypass 1 kHz:     1.4 | DC:     1.6 | Noise 100 kHz:     1.4
+Iteration 105 | Carrier 50 kHz:    63.6 | DUC 51 kHz:   732.4 | Bypass 1 kHz:     1.8 | DC:     1.2 | Noise 100 kHz:     1.5
+Iteration 120 | Carrier 50 kHz:    63.6 | DUC 51 kHz:   731.9 | Bypass 1 kHz:     1.5 | DC:     1.3 | Noise 100 kHz:     1.4
+Iteration 135 | Carrier 50 kHz:    63.5 | DUC 51 kHz:   731.7 | Bypass 1 kHz:     1.2 | DC:     1.0 | Noise 100 kHz:     1.3
+Iteration 150 | Carrier 50 kHz:    63.6 | DUC 51 kHz:   731.7 | Bypass 1 kHz:     1.1 | DC:     1.8 | Noise 100 kHz:     1.4
+Iteration 165 | Carrier 50 kHz:    63.7 | DUC 51 kHz:   731.5 | Bypass 1 kHz:     1.4 | DC:     0.3 | Noise 100 kHz:     1.4
+Iteration 180 | Carrier 50 kHz:    63.5 | DUC 51 kHz:   731.3 | Bypass 1 kHz:     1.5 | DC:     0.4 | Noise 100 kHz:     1.4
+Iteration 195 | Carrier 50 kHz:    63.6 | DUC 51 kHz:   731.1 | Bypass 1 kHz:     1.3 | DC:     1.5 | Noise 100 kHz:     1.4
+Iteration 210 | Carrier 50 kHz:    63.5 | DUC 51 kHz:   731.2 | Bypass 1 kHz:     1.4 | DC:     0.5 | Noise 100 kHz:     1.4
+Iteration 225 | Carrier 50 kHz:    63.6 | DUC 51 kHz:   730.9 | Bypass 1 kHz:     1.4 | DC:     0.7 | Noise 100 kHz:     1.3
+Iteration 240 | Carrier 50 kHz:    63.5 | DUC 51 kHz:   730.7 | Bypass 1 kHz:     1.5 | DC:     0.5 | Noise 100 kHz:     1.5
+Iteration 255 | Carrier 50 kHz:    63.5 | DUC 51 kHz:   730.8 | Bypass 1 kHz:     1.5 | DC:     2.0 | Noise 100 kHz:     1.4
+Iteration 270 | Carrier 50 kHz:    63.5 | DUC 51 kHz:   730.3 | Bypass 1 kHz:     1.2 | DC:     1.9 | Noise 100 kHz:     1.4
+Iteration 285 | Carrier 50 kHz:    63.5 | DUC 51 kHz:   730.1 | Bypass 1 kHz:     1.6 | DC:     1.4 | Noise 100 kHz:     1.4
+Loopback test completed successfully. Muting TX...

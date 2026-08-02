@@ -1,0 +1,17 @@
+# command: /root/diagnostics --test-narrowband-rx 768000
+=== LOW-SPAN (AD9361 internal FIR) TEST ===
+target span 0.768 MHz (below the 2.083 MSPS FIR-bypassed floor)
+
+set_bb_rate_fir(768000) -> sampling_frequency reads 767999 Hz
+waterfall: 16384-pt FFT over 0.768 MHz -> 46.9 Hz/bin  (vs 234.4 Hz/bin at 3.84 MHz)
+
+
+audio DMA path: fs/16 = 47999 Hz (the rate SSB audio would arrive at here)
+  captured 49152 samples in 1.020s (~48209.3 Hz effective), RMS 1.0
+  audio DMA path OK at low rate.
+captured 12 bursts, peak ADC sample 3 (12-bit FS +/-2047)
+DC/LO spike 20.8 dB over noise floor
+
+RESULT: PASS - AD9361 + FPGA deliver live samples at 0.768 MHz; waterfall bin is
+        46.9 Hz (5.0x finer than 3.84 MHz).
+=== LOW-SPAN TEST COMPLETE ===

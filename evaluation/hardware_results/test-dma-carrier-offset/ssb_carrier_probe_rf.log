@@ -1,0 +1,50 @@
+# command: /root/diagnostics --test-dma-carrier-offset
+=== TX CARRIER / SIDEBAND PROBE (audio DMA, off-DC carrier) ===
+
+--- Run configuration ---
+  TX/RX LO      : 2400.100 MHz
+  Sample rate   : 3.840 MHz
+  TX DDS offset : +50.000 kHz
+  RX gain       : 40.0 dB (manual)
+  Signal path   : RF cable loopback
+  Build         : pluto v0.1.0
+
+--- Keyed, silence (static DAC bias) ---
+  Captured 44 DMA reads, 720896 samples (3.00s at 240 kHz)
+  carrier +5 kHz         0.0031
+  noise +20 kHz          0.0033
+
+--- Keyed, 1 kHz USB tone (production modulator) ---
+  Captured 60 DMA reads, 983040 samples (4.10s at 240 kHz)
+  target              magnitude        dBc
+  wanted +6 kHz        480.7494       +0.0
+  carrier +5 kHz         0.1233      -71.8
+  opposite +4 kHz        0.0499      -79.7
+  DC (blocked)           0.5630      -58.6
+  RX LO leak -45 kHz     0.1049      -73.2
+  noise +20 kHz          0.0053      -99.1
+
+Carrier split (silent vs modulated):
+  static DAC/LO bias : 0.0031 (-103.9 dBc)
+  during modulation  : 0.1233 (-71.8 dBc)
+Exported spectrum to ssb_carrier_probe_tone_rf.csv (4097 rows, RBW 0.244 Hz, 10 bins max-held per row)
+
+--- Keyed, 700 Hz + 1900 Hz Two-Tone (off-DC audio DMA probe) ---
+  Captured 60 DMA reads, 983040 samples (4.10s at 240 kHz)
+  target                  magnitude        dBc
+  f1 tone +5.7 kHz         237.2981       +0.0
+  f2 tone +6.9 kHz         199.8974       -1.5
+  carrier +5.0 kHz           0.0935      -68.1
+  IMD3 low +4.5 kHz          0.1896      -61.9
+  IMD3 up +8.1 kHz           0.1486      -64.1
+  IMD5 low +3.3 kHz          0.1495      -64.0
+  IMD5 up +9.3 kHz           0.1140      -66.4
+  noise +20 kHz              0.0032      -97.4
+
+Audio-DMA Off-DC IMD3 Linearity Evaluation:
+  IMD3 Lower (2*f1-f2, -500 Hz rel) : -61.9 dBc
+  IMD3 Upper (2*f2-f1, +3.1 kHz rel): -64.1 dBc
+  VERDICT: PASS (EXCELLENT LINEARITY: IMD3 <= -40.0 dBc)
+Exported spectrum to ssb_carrier_probe_twotone_rf.csv (4097 rows, RBW 0.244 Hz, 10 bins max-held per row)
+
+=== TX CARRIER / SIDEBAND PROBE COMPLETE ===

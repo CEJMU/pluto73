@@ -1347,9 +1347,6 @@ pub fn tx_rounded_fs(tx_fs: f64) -> f64 {
 /// FPGA CIC interpolation factor for a (already 192-kHz-rounded) TX rate. The hardware FIR compiler
 /// handles the 4x interpolation, so the CIC only covers 1/4 of the total factor.
 pub fn tx_cic_interpolation(rounded_tx_fs: f64) -> u32 {
-    let total_interpolation = (rounded_tx_fs / crate::AUDIO_SAMPLE_RATE as f64)
-        .round()
-        .max(16.0)
-        .min(256.0) as u32;
+    let total_interpolation = (rounded_tx_fs / crate::AUDIO_SAMPLE_RATE as f64).round().clamp(16.0, 256.0) as u32;
     total_interpolation / 4
 }

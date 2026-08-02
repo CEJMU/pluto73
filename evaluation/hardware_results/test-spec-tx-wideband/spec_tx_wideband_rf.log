@@ -1,0 +1,49 @@
+# command: /root/diagnostics --test-spec-tx-wideband
+=== TX WIDEBAND SPECTRUM (raw ADC, true transmitted RF) ===
+
+--- Run configuration ---
+  TX/RX LO      : 2400.100 MHz
+  Sample rate   : 3.840 MHz
+  TX DDS offset : +1000.000 kHz
+  RX gain       : 40.0 dB (manual)
+  Signal path   : RF cable loopback
+  Build         : pluto v0.1.0
+
+Peak ADC sample: 431 (12-bit full scale +/-2047 -> 21% of FS)  (headroom ok)
+
+Wanted tone is on: USB (+1001 kHz) - correct for USB mode
+  Resolution: 4.3 bins at 234.4 Hz/bin - carrier and opposite-sideband probes NOT resolved.
+  The values below are the analysis window's leakage floor, i.e. UPPER BOUNDS, not
+  measurements. Use --test-dma-carrier-offset (multi-second capture, sub-Hz bins,
+  -100 dBc floor) for the true in-channel figures.
+
+  tone                 0.0 dBc (reference)
+  carrier (LO+1000 kHz): -55.8 dBc   ok
+  opp-sideband         : -59.3 dBc   ok
+
+Spectrum around the signal (dBc vs the tone):
+  LO  +994 kHz   -69.1 dBc 
+  LO  +995 kHz   -67.5 dBc 
+  LO  +996 kHz   -65.9 dBc 
+  LO  +997 kHz   -64.3 dBc 
+  LO  +998 kHz   -62.2 dBc 
+  LO  +999 kHz   -59.3 dBc  <lsb
+  LO +1000 kHz   -55.8 dBc # <CARRIER
+  LO +1001 kHz     0.0 dBc #################### <usb(wanted)
+  LO +1002 kHz   -56.3 dBc #
+  LO +1003 kHz   -57.7 dBc 
+  LO +1004 kHz   -62.2 dBc 
+  LO +1005 kHz   -64.3 dBc 
+  LO +1006 kHz   -66.1 dBc 
+
+Exported raw ADC 16k close-in spectrum CSV to ssb_16k_spectrum_rf.csv
+Exported raw ADC 16k full wideband spectrum CSV to ssb_16k_wideband_spectrum_rf.csv
+
+Spur scan (peaks > 20 dB over noise floor, excluding the wanted 999-1001 kHz signal):
+  offset from LO       level       source
+      -1838.0 kHz    -44.8 dBc   TX-generated
+      -1001.0 kHz    -45.8 dBc   TX-generated
+      +1838.0 kHz    -47.3 dBc   TX-generated
+       -255.0 kHz    -57.7 dBc   TX-generated
+
+=== TX WIDEBAND COMPLETE ===

@@ -1,0 +1,43 @@
+# command: /root/diagnostics --test-pacing-dma-delay
+=== TX DMA TIMING TEST ===
+Measures how long write_buffer/push() actually blocks.
+
+Configured rate: 3840000 Hz (FIR: false)
+Expected: ~85ms per push (4096 samples at 48 kHz effective rate)
+If push takes <1ms, the FIFO is overflowing.
+
+--- Backpressure test: No sleep between pushes ---
+  100 pushes in 8288.1ms (expected 8533.3ms for real-time)
+  Per-push: min=1.36ms  median=76.11ms  mean=73.65ms  max=76.17ms
+  >>> push() IS blocking - backpressure is working <<<
+  Distribution: <1ms: 0  <10ms: 3  >50ms: 97  >80ms: 0
+
+--- Startup behavior: First 20 pushes detailed ---
+  Push  0: 1.39ms
+  Push  1: 1.42ms
+  Push  2: 1.41ms
+  Push  3: 54.51ms
+  Push  4: 75.83ms
+  Push  5: 75.99ms
+  Push  6: 75.99ms
+  Push  7: 76.00ms
+  Push  8: 76.01ms
+  Push  9: 76.00ms
+  Push 10: 76.01ms
+  Push 11: 76.01ms
+  Push 12: 76.01ms
+  Push 13: 75.99ms
+  Push 14: 76.01ms
+  Push 15: 76.02ms
+  Push 16: 75.89ms
+  Push 17: 75.97ms
+  Push 18: 75.99ms
+  Push 19: 76.01ms
+
+--- Steady-state: Drain rate measurement ---
+  300 pushes x 4096 = 1228800 samples in 25.600s
+  drain rate      = 48000 Hz  (target 48000)
+  implied l_clk   = 7.680 MHz  (= 2.00 x 3.840 MHz)
+  divisor for 48k = 2.00  (configured strobe divisor 2.0)
+
+=== TX TIMING TEST COMPLETE ===

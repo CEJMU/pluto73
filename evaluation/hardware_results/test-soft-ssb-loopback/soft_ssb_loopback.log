@@ -1,0 +1,44 @@
+# command: /root/diagnostics --test-soft-ssb-loopback /root/soft_ssb.wav
+=== SSB DEMOD SOFTWARE TEST ===
+Pure software: modulate -> simulate FPGA -> demodulate -> WAV
+No hardware involved.
+
+Input: 96000 samples (2.0s), tones at 500 Hz + 1500 Hz
+Modulator output: 98304 IQ samples at 48 kHz
+
+Modulator output spectrum:
+   -2000 Hz:      0.0  
+   -1500 Hz:      0.0  
+   -1000 Hz:      0.0  
+    -500 Hz:      0.5  
+      +0 Hz:      0.0  
+    +500 Hz:   3271.2  ######
+   +1000 Hz:      0.0  
+   +1500 Hz:   3750.2  #######
+   +2000 Hz:      0.0  
+
+Simulating FPGA round-trip...
+  Simulated DMA: 491520 samples at 240 kHz
+  Demodulated: 98304 audio samples at 48 kHz
+
+Demodulated output spectrum:
+       0 Hz:        0.0  -86.7 dB  
+     250 Hz:        0.2  -62.8 dB  
+     500 Hz:      313.6   -0.5 dB  ############################
+     750 Hz:        0.3  -59.6 dB  
+    1000 Hz:        0.2  -63.4 dB  
+    1250 Hz:        0.4  -57.4 dB  
+    1500 Hz:      332.4    0.0 dB  ##############################
+    1750 Hz:        0.3  -59.6 dB  
+    2000 Hz:        0.1  -68.8 dB  
+    2500 Hz:        0.1  -73.7 dB  
+    3000 Hz:        0.0  -86.2 dB  
+    5000 Hz:        0.0  -95.5 dB  
+
+Output: peak=1053.9739
+Wrote: /root/soft_ssb.wav
+Wrote input reference: /root/soft_ssb_input.wav
+
+=== SSB DEMOD TEST COMPLETE ===
+Compare /root/soft_ssb.wav (demodulated) vs /root/soft_ssb_input.wav (original)
+Expected: tones at 500 Hz and 1500 Hz in both files.

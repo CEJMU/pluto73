@@ -1,0 +1,34 @@
+# command: /root/diagnostics --test-rf-audio-loopback /root/in_music_speech.wav /root/out_speech_30720000.wav 30720000
+=== FPGA RF AUDIO LOOPBACK TEST ===
+Uses the proven FPGA audio pipeline (same as FM reception).
+Sideband: USB
+
+  WAV: Int 1ch 48000Hz 16bit
+Input: 240000 samples (5.00s at 48000 Hz)
+Opening PlutoDevice...
+Configuring FPGA...
+RX gain: 40 dB (manual), LO: 900 MHz
+TX: LO=900 MHz, +50 kHz DDS offset
+Audio DMA: 240 kHz -> software decimate by 5 -> 48 kHz
+SSB USB demod: BFO=1500 Hz, IF cutoff=3000 Hz
+Transmitting audio (clock-paced)...
+TX DMA feed rate = 120000 Hz (resampler active - resampler enabled)
+  [TX] 0/64 (0.0s)
+  [TX] 10/64 (0.9s)
+  [TX] 20/64 (1.7s)
+  [TX] 30/64 (2.6s)
+  [RX] 50 DMA reads, 163840 audio samples so far
+  [TX] 40/64 (3.4s)
+  [TX] 50/64 (4.3s)
+  [TX] 60/64 (5.1s)
+TX done. Stopping RX...
+  [RX] Done: 89 DMA reads, 291635 audio samples (6.08s)
+Output: 291635 samples (6.08s), peak=673.717834, gain=0.0
+Wrote: /root/out_speech_30720000.wav
+
+--- Envelope correlation (50 ms RMS windows, best alignment) ---
+  reference band-limited to the 300-3000 Hz transmit passband before comparison
+  full passband  r = 0.990   (best lag 0.40 s)
+  below 800 Hz   r = 0.989   (best lag 0.40 s)
+  above 800 Hz   r = 0.991   (best lag 0.40 s)
+=== FPGA RF AUDIO LOOPBACK TEST COMPLETE ===

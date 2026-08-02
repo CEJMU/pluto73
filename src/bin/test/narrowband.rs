@@ -1,4 +1,4 @@
-use crate::test::dsp_helpers::{AUDIO_SAMPLE_RATE, apply_hamming_window, dominant_tone};
+use crate::test::dsp_helpers::{AUDIO_SAMPLE_RATE, apply_hamming_window, dominant_tone_spurs};
 use num_complex::Complex;
 use pluto::device::{
     GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, PlutoTxDevice, wait_for_uio_interrupt,
@@ -298,12 +298,41 @@ pub fn run_narrowband_loopback(rate_hz: i64, _secs: f32) -> Result<(), Box<dyn s
         audio.len() as f32 / AFS,
         AFS as i64
     );
-    let (peak_hz, snr_db) = dominant_tone(&audio, AFS);
+    let (peak_hz, snr_db, near) = dominant_tone_spurs(&audio, AFS, 3, 0.0);
+    let (_, _, far) = dominant_tone_spurs(&audio, AFS, 5, 100.0);
     let err = (peak_hz - tone_hz).abs();
     println!(
         "dominant recovered tone: {:.1} Hz (expected {:.0} Hz, err {:.1} Hz), peak/spur {:.1} dB",
         peak_hz, tone_hz, err, snr_db
     );
+    println!(
+        "  (analysis resolution {:.2} Hz/bin - the frequency error is quantised to that grid)",
+        AFS / 32768.0
+    );
+    let describe = |f: f32| -> String {
+        if (f - tone_hz).abs() < 100.0 {
+            "analysis-window skirt, NOT a spur".to_string()
+        } else if (f / tone_hz - (f / tone_hz).round()).abs() < 0.02 && f > tone_hz * 1.5 {
+            format!(
+                "{}x the tone (harmonic distortion)",
+                (f / tone_hz).round() as i32
+            )
+        } else {
+            "unrelated line".to_string()
+        }
+    };
+    println!("  what limits the ratio above:");
+    for (f, d) in &near {
+        println!("    {:>8.1} Hz  {:>6.1} dBc   {}", f, d, describe(*f));
+    }
+    let real = far.first().map(|&(_, d)| d).unwrap_or(f32::NAN);
+    println!(
+        "  excluding +-100 Hz around the tone, the true peak-to-spur is {:.1} dB:",
+        -real
+    );
+    for (f, d) in &far {
+        println!("    {:>8.1} Hz  {:>6.1} dBc   {}", f, d, describe(*f));
+    }
     println!("\n========================================");
     if err < 60.0 && snr_db > 12.0 {
         println!("TEST RESULT: PASS");

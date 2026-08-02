@@ -40,12 +40,7 @@ impl FilterAudio {
 
     fn recompute_taps(&mut self) {
         let mut num_taps = (self.decimation * 6) | 1; // Keep it odd for symmetric filter properties
-        if num_taps < 63 {
-            num_taps = 63;
-        }
-        if num_taps > 511 {
-            num_taps = 511;
-        }
+        num_taps = num_taps.clamp(63, 511);
         let max_cutoff = (self.fs_hz as f32 / self.decimation as f32) * 0.45;
         let effective_cutoff = self.cutoff_hz.min(max_cutoff);
         let fc = effective_cutoff / self.fs_hz as f32; // Low pass cutoff
@@ -177,7 +172,7 @@ pub enum AudioProcessor {
 
 impl AudioProcessor {
     pub fn new(demod: Demodulation) -> Self {
-        let chain = match demod {
+        match demod {
             Demodulation::FM {
                 audio_fs,
                 dev_hz,
@@ -213,8 +208,7 @@ impl AudioProcessor {
                 dc_blocker_x: 0.0,
                 dc_blocker_y: 0.0,
             },
-        };
-        chain
+        }
     }
 
     pub fn process(&mut self, samples: Vec<Complex32>, audio_buffer: &mut Vec<f32>) {

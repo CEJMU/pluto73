@@ -1,0 +1,32 @@
+# command: /root/diagnostics --test-spec-tx-twotone
+=== TX TWO-TONE IMD3 LINEARITY TEST (700 Hz + 1900 Hz, raw ADC wideband) ===
+
+--- Run configuration ---
+  TX/RX LO      : 2400.100 MHz
+  Sample rate   : 3.840 MHz
+  TX DDS offset : +1000.000 kHz
+  RX gain       : 40.0 dB (manual)
+  Signal path   : RF cable loopback
+  Build         : pluto v0.1.0
+
+Peak ADC sample: 412 (12-bit full scale +/-2047 -> 20% of FS)
+
+  Resolution: 3.0 bins at 234.4 Hz/bin - carrier and IMD3 probes NOT resolved.
+  The values below are the analysis window's leakage floor, i.e. UPPER BOUNDS, not
+  measurements. Use --test-dma-carrier-offset (multi-second capture, sub-Hz bins,
+  -100 dBc floor) for the true in-channel figures.
+
+Two-Tone Signals & Intermodulation Products:
+  Fundamental f1 (+700 Hz)   : LO+1000.70 kHz     0.0 dBc
+  Fundamental f2 (+1900 Hz)  : LO+1001.90 kHz    -0.3 dBc
+  Carrier Residual (0 Hz)    : LO+1000.00 kHz   -23.8 dBc
+  IMD3 Lower (2*f1-f2, -500Hz): LO+999.50 kHz    -42.3 dBc
+  IMD3 Upper (2*f2-f1, +3.1k) : LO+1003.10 kHz   -44.6 dBc
+
+IMD3 Linearity Evaluation:
+  VERDICT: PASS (EXCELLENT LINEARITY: IMD3 <= -40.0 dBc)
+
+Exported two-tone 16k spectrum CSV to ssb_twotone_spectrum_rf.csv
+Exported two-tone 16k full wideband spectrum CSV to ssb_twotone_wideband_spectrum_rf.csv
+
+=== TX TWO-TONE IMD3 TEST COMPLETE ===

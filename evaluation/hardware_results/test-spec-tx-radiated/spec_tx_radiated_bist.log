@@ -1,0 +1,72 @@
+# command: /root/diagnostics --test-spec-tx-radiated --loopback
+=== RADIATED TX SIGNAL (software modulator -> FPGA TX -> raw wideband ADC) ===
+
+TX: real modulator + FPGA interpolator/DDS/DAC, cyclic DMA (cannot starve)
+RX: stock wideband path, burst gate bypassed - no custom receive DSP in the loop
+
+--- Run configuration ---
+  TX/RX LO      : 2400.100 MHz
+  Sample rate   : 3.840 MHz
+  TX DDS offset : +1000.000 kHz
+  RX gain       : 40.0 dB (manual)
+  Signal path   : AD9361 BIST digital loopback (DAC/analog/ADC bypassed)
+  Build         : pluto v0.1.0
+
+AD9361 BIST digital loopback ENABLED (TX->RX, RF path bypassed)
+  Resolution: 273.1 bins at 3.7 Hz/bin - carrier and sideband probes resolved.
+
+
+Capturing (5 x ~1.4 s)...
+
+Peak ADC: silence 0, single 56 (2.7% FS), two-tone 54 (2.6% FS), TX off 0
+Reference (wanted tone, single-tone case): 27883336.0 magnitude
+
+--- SILENCE (modulator fed zeros; what radiates with no audio) ---
+  carrier   @ LO+1000 kHz : -240.0 dBc
+  LO leak   @ LO          : -240.0 dBc
+  noise ref @ LO+1020 kHz : -240.0 dBc
+
+--- SINGLE TONE (1 kHz USB) ---
+  wanted    @ LO+1001.0 kHz :    0.0 dBc  (reference)
+  carrier   @ LO+1000.0 kHz :  -76.6 dBc
+  opp sideb @ LO+999.0 kHz :  -89.3 dBc
+  LO image  @ LO-1001.0 kHz :  -92.1 dBc  <-- analog quadrature image
+  img carr  @ LO-1000.0 kHz :  -95.2 dBc
+  noise ref @ LO+1020 kHz :  -94.0 dBc
+
+--- TWO TONE (700 Hz + 1900 Hz, each at half amplitude) ---
+  f1        @ LO+1000.7 kHz :    0.0 dBc  (reference)
+  f2        @ LO+1001.9 kHz :   -2.0 dBc
+  carrier   @ LO+1000.0 kHz :  -68.7 dBc
+  IMD3 low  @ LO+999.5 kHz :  -76.8 dBc
+  IMD3 high @ LO+1003.1 kHz :  -81.6 dBc
+  IMD5 low  @ LO+998.3 kHz :  -96.4 dBc
+  IMD5 high @ LO+1004.3 kHz :  -80.4 dBc
+  noise ref @ LO+1020 kHz :  -94.2 dBc
+
+--- SPUR ATTRIBUTION (RX gain 40 dB vs 30 dB, peak ADC 56 vs 56) ---
+  Digital loopback: DAC, mixer, PA, ADC and both LOs are out of the path, so every
+  line below was produced by the software modulator or the FPGA, and the gain step
+  is not in the signal path - no radiated/receiver split applies here.
+        offset     level  TX-muted  low-gain    delta  verdict
+    -1001.0 kHz    -92.1    -240.0     -98.3     -6.2  digital origin quadrature image
+     -255.0 kHz    -58.2    -240.0     -58.1     +0.1  digital origin 
+    -1583.0 kHz    -59.6    -240.0     -59.6     +0.0  digital origin 
+    -1091.0 kHz    -61.2    -240.0     -61.1     +0.1  digital origin 
+    -1731.0 kHz    -61.2    -240.0     -61.7     -0.5  digital origin 
+      -91.0 kHz    -61.4    -240.0     -61.8     -0.4  digital origin 
+    +1697.0 kHz    -62.0    -240.0     -61.6     +0.4  digital origin 
+     +713.0 kHz    -62.2    -240.0     -68.1     -5.8  digital origin 
+
+--- REPEATABILITY (5 consecutive single-tone captures) ---
+                  line      min      max   spread   runs
+               carrier    -76.5    -73.5      3.0   [-76.1, -75.9, -73.9, -73.5, -76.5]  @ +1000.0 kHz
+          opp sideband    -90.3    -83.9      6.4   [-90.3, -83.9, -88.8, -85.3, -86.0]  @ +999.0 kHz
+      quadrature image    -97.1    -88.1      8.9   [-92.7, -97.1, -93.4, -95.1, -88.1]  @ -1001.0 kHz
+    largest other spur    -58.6    -58.1      0.5   [-58.6, -58.3, -58.1, -58.5, -58.4]  @ -255.0 kHz
+Exported /root/radiated_tone_bist.csv (full span, RBW 3.66 Hz, max-hold)
+Exported /root/radiated_closein_tone_bist.csv (+-10 kHz, RBW 3.66 Hz, max-hold)
+Exported /root/radiated_twotone_bist.csv (full span, RBW 3.66 Hz, max-hold)
+Exported /root/radiated_closein_twotone_bist.csv (+-10 kHz, RBW 3.66 Hz, max-hold)
+
+=== RADIATED TX CHARACTERISATION COMPLETE ===

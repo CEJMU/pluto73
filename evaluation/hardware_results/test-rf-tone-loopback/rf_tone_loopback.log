@@ -1,0 +1,28 @@
+# command: /root/diagnostics --test-rf-tone-loopback 1000 3 /root/tone_loopback.wav
+=== FPGA RF TONE LOOPBACK TEST ===
+Transmits a continuous 1000 Hz tone for 3 s (TX chunk_size=4096, fs=3840000 Hz).
+
+Opening PlutoDevice...
+Configuring FPGA...
+TX: LO=900 MHz, +50 kHz DDS offset
+Audio DMA: 240 kHz -> software decimate by 5 -> 48 kHz
+Transmitting continuous tone (clock-paced)...
+TX DMA feed rate = 48000 Hz (resampler bypassed)
+  [TX] 0/41 (0.0s)
+  [TX] 10/41 (0.9s)
+  [TX] 20/41 (1.7s)
+  [TX] 30/41 (2.6s)
+  [RX] 50 DMA reads, 163840 audio samples so far
+  [TX] 40/41 (3.4s)
+TX done. Stopping RX...
+  [RX] Done: 64 DMA reads, 209715 audio samples (4.37s)
+Output: 209715 samples (4.37s), peak=600.217407, gain=0.0015
+Wrote: /root/tone_loopback.wav
+
+--- Recovered tone quality (steady-state region) ---
+  frequency        : 1000.5 Hz (nominal 1000 Hz)
+  2nd harmonic     :  -98.3 dBc
+  3rd harmonic     : -115.0 dBc
+  worst other line :  -63.3 dBc at 899 Hz
+  envelope spread  : 0.30 % of mean over 2.5 s (peak-to-trough, 50 ms windows)
+=== FPGA RF TONE LOOPBACK TEST COMPLETE ===

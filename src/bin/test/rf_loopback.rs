@@ -1,4 +1,7 @@
-use crate::test::dsp_helpers::{AUDIO_SAMPLE_RATE, read_wav_as_f32_mono, write_wav_f32_mono};
+use crate::test::dsp_helpers::{
+    AUDIO_SAMPLE_RATE, read_wav_as_f32_mono, report_envelope_correlation, report_tone_quality,
+    write_wav_f32_mono,
+};
 use pluto::device::{
     GainMode, MAX_AUDIO_SAMPLES, PlutoDevice, rx_cic_decimation_for_rate, wait_for_uio_interrupt,
 };
@@ -397,6 +400,8 @@ pub fn run_rf_audio_loopback(
     write_wav_f32_mono(output_path, &all_audio, AUDIO_SAMPLE_RATE, true)?;
     println!("Wrote: {}", output_path);
 
+    report_envelope_correlation(&audio_samples, &all_audio, AUDIO_SAMPLE_RATE);
+
     println!("=== FPGA RF AUDIO LOOPBACK TEST COMPLETE ===");
     Ok(())
 }
@@ -659,6 +664,8 @@ pub fn run_rf_tone_loopback(
 
     write_wav_f32_mono(output_path, &all_audio, AUDIO_SAMPLE_RATE, true)?;
     println!("Wrote: {}", output_path);
+
+    report_tone_quality(&all_audio, AUDIO_SAMPLE_RATE, freq_hz);
 
     println!("=== FPGA RF TONE LOOPBACK TEST COMPLETE ===");
     Ok(())

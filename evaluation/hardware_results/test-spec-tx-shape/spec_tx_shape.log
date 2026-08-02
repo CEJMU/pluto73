@@ -1,0 +1,26 @@
+# command: /root/diagnostics --test-spec-tx-shape
+=== TX SPECTRUM CHARACTERIZATION (transmitted signal, isolated from RX demod) ===
+
+--- fs = 3.84 MHz ---
+      tone    USB level     opp-sideband
+     300Hz       -6.0 dB        -54.7 dBc
+     600Hz       -1.6 dB        -56.7 dBc
+    1000Hz        0.0 dB        -70.1 dBc
+    1500Hz       -0.5 dB        -70.5 dBc
+    2000Hz       -1.2 dB        -70.8 dBc
+    2500Hz       -2.0 dB        -71.1 dBc
+    2900Hz       -4.5 dB        -83.4 dBc
+  -> audio-band flatness 6.0 dB; worst opp-sideband -54.7 dBc
+
+--- fs = 7.68 MHz ---
+      tone    USB level     opp-sideband
+     300Hz       -6.0 dB        -54.7 dBc
+     600Hz       -1.6 dB        -56.6 dBc
+    1000Hz        0.0 dB        -70.1 dBc
+    1500Hz       -0.5 dB        -70.6 dBc
+    2000Hz       -1.2 dB        -70.8 dBc
+    2500Hz       -2.0 dB        -71.2 dBc
+    2900Hz       -4.6 dB        -83.6 dBc
+  -> audio-band flatness 6.0 dB; worst opp-sideband -54.7 dBc
+
+=== TX SPECTRUM CHARACTERIZATION COMPLETE ===
