@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
-use crate::device::{PlutoSystem, unpack_iq_words, wait_for_uio_interrupt};
+use crate::device::{PlutoSystem, copy_dma_words, unpack_iq_words, wait_for_uio_interrupt};
 use crate::dsp::{AudioProcessor, Demodulation, FilterAudio};
 use crate::state::DemodMode;
 use crate::{AUDIO_SAMPLE_RATE, FILTER_BW_MIN_HZ, MIN_SPAN_FM, filter_bw_max_hz};
@@ -112,7 +112,7 @@ pub fn spawn_audio_thread(
 
         let mut audio_processor: Option<AudioProcessor> = None;
         let initial_cic_decimation = { system.lock().unwrap().rx_cic_decimation };
-        let initial_fs = MIN_SPAN_FM / initial_cic_decimation as i64;
+        let initial_fs = (MIN_SPAN_FM / initial_cic_decimation as i64) / 4;
         let initial_decimation = (initial_fs as f32 / 240_000.0).round() as usize;
         let mut audio_filter = FilterAudio::new(initial_decimation.max(1), initial_fs, 120_000.0);
         let mut current_mode: Option<Demodulation> = None;
@@ -188,16 +188,8 @@ pub fn spawn_audio_thread(
             }
 
             if total_read > 0 && !ram_ptr.is_null() {
-                // Copy the entire block in bulk into the reused scratch vector first.
-                // This uses optimized memcpy (AXI burst reads) which is much faster.
-                dma_words.clear();
-                dma_words.reserve(total_read);
-                // SAFETY: ram_ptr points at `total_read` packed samples in the mmapped DMA buffer. dma_words has just reserved at least that much capacity.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(ram_ptr, dma_words.as_mut_ptr(), total_read);
-                    dma_words.set_len(total_read);
-                }
-
+                // Copy the entire block in bulk into the scratch vector outside the lock (AXI burst reads).
+                copy_dma_words(ram_ptr, total_read, &mut dma_words);
                 unpack_iq_words(&dma_words, &mut i_ch, &mut q_ch);
 
                 // Mute the audio stream while the hardware is configuring

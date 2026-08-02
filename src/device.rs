@@ -1206,6 +1206,23 @@ impl PlutoSystem {
     }
 }
 
+/// Safely bulk-copies `count` packed 32-bit words from the raw mmapped DMA buffer pointer
+/// `ram_ptr` into a caller-provided destination vector outside the mutex lock.
+pub fn copy_dma_words(ram_ptr: *const u32, count: usize, dest: &mut Vec<u32>) {
+    if ram_ptr.is_null() || count == 0 {
+        dest.clear();
+        return;
+    }
+    dest.clear();
+    dest.reserve(count);
+    // SAFETY: ram_ptr points at `count` 32-bit words in the mmapped DDR buffer.
+    // `dest` has reserved capacity for at least `count` elements.
+    unsafe {
+        std::ptr::copy_nonoverlapping(ram_ptr, dest.as_mut_ptr(), count);
+        dest.set_len(count);
+    }
+}
+
 /// Unpacks DMA words ({Q,I} packed 16+16, I in the low half, matching `iq_packer.v`) into separate I/Q vectors.
 pub fn unpack_iq_words(words: &[u32], i_buf: &mut Vec<i16>, q_buf: &mut Vec<i16>) {
     i_buf.reserve(words.len());
@@ -1313,11 +1330,13 @@ pub fn tx_strobe_phase_inc(fs: f64) -> u32 {
     ((65536.0 * fs / l_clk).round() as i64).clamp(0, 0xFFFF) as u32
 }
 
-/// FPGA CIC decimation for an RX baseband rate, targeting ~960 kHz into the AD9361 FIR: clamp to
-/// [4, 32] and round up to a power of two (`iq_packer.v`'s bit-shift audio scaling requires exact
-/// powers of two). This is the RX counterpart to the TX rate math in `tx_apply_dsp_config`.
+// FPGA CIC decimation for an RX baseband rate, targeting ~960 kHz into the AD9361 FIR: clamp to
+/// [4, 64] and round up to a power of two (iq_packer.v's bit-shift audio scaling requires exact
+/// powers of two). The bounds are the CIC cores' configured Minimum_Rate/Maximum_Rate; the upper
+/// one is not reachable today in code, since MAX_SPAN (30.72 MHz) yields exactly 32.
+/// This is the RX counterpart to the TX rate math in tx_apply_dsp_config.
 pub fn rx_cic_decimation_for_rate(rx_fs: i64) -> u32 {
-    ((rx_fs / 960_000).clamp(4, 32) as u32).next_power_of_two()
+    ((rx_fs / 960_000).clamp(4, 64) as u32).next_power_of_two()
 }
 
 /// Rounds a requested TX baseband rate to a clean multiple of 192 kHz (48 kHz x 4x FIR interpolation).

@@ -40,22 +40,24 @@ pub fn design_lowpass_hamming(num_taps: usize, fc: f32) -> Vec<f32> {
 
 /// Designs the shared complex analytic band-pass FIR taps: a windowed-sinc low-pass prototype
 /// (Blackman window) frequency-shifted so the filter passes audio `[f_lo, filter_bw]` on one side of
-/// DC and rejects the other sideband. `f_lo = 0.0` gives the original low-pass-shifted `[0, filter_bw]`
-/// (used by the RX); the TX passes `f_lo = TX_AUDIO_LOW_CUT_HZ` for the low-cut. `usb=true` shifts up
-/// (passes positive frequencies), `usb=false` shifts down (LSB). Normalized to unity passband gain.
-/// Used by both the TX modulator (`ComplexSsbFir`) and the RX demod (`AnalyticSsbDemod`) so
-/// they stay matched duals (the RX's wider [0, bw] cleanly demodulates the TX's [f_lo, bw]).
+/// DC and rejects the opposite sideband.
+/// - `f_lo = 0.0`: Low-pass-shifted `[0, filter_bw]` (used by RX `AnalyticSsbDemod`).
+/// - `f_lo = TX_AUDIO_LOW_CUT_HZ`: Low-cut-shifted `[f_lo, filter_bw]` (used by TX `ComplexSsbFir`).
+/// - `usb = true`: Shifts up (USB, positive frequencies); `usb = false`: Shifts down (LSB, negative frequencies).
+///
+/// Output taps are normalized to unity passband gain (sum of prototype taps = 1).
 pub fn ssb_analytic_taps(fs: f32, filter_bw: f32, usb: bool, f_lo: f32) -> Vec<C32> {
     let ntaps = SSB_FIR_TAPS;
     let m = (ntaps - 1) / 2;
-    // Prototype low-pass cutoff = half the passband width; shift = passband center. For f_lo = 0
-    // this reduces to fc = filter_bw/2, shift = filter_bw/2 (the original behaviour).
-    let center = (f_lo + filter_bw) / 2.0;
-    let half = (filter_bw - f_lo) / 2.0;
-    let fc = half / fs; // prototype LP cutoff (cycles/sample)
-    let shift = (center / fs) * if usb { 1.0 } else { -1.0 };
     let pi = std::f32::consts::PI;
 
+    // Step 1: Compute prototype low-pass cutoff and complex frequency modulation shift
+    let center = (f_lo + filter_bw) / 2.0;
+    let half = (filter_bw - f_lo) / 2.0;
+    let fc = half / fs; // Prototype low-pass cutoff (cycles per sample)
+    let shift = (center / fs) * if usb { 1.0 } else { -1.0 }; // Normalized frequency shift
+
+    // Step 2: Generate real-valued low-pass prototype g[k] using a Blackman window
     let mut g = vec![0.0f32; ntaps];
     for i in 0..ntaps {
         let k = i as isize - m as isize;
@@ -64,10 +66,13 @@ pub fn ssb_analytic_taps(fs: f32, filter_bw: f32, usb: bool, f_lo: f32) -> Vec<C
         } else {
             (2.0 * pi * fc * k as f32).sin() / (pi * k as f32)
         };
+        // Blackman window: w(n) = 0.42 - 0.5 * cos(2pi*n/(N-1)) + 0.08 * cos(4pi*n/(N-1))
         let a = 2.0 * pi * i as f32 / (ntaps - 1) as f32;
         let w = 0.42 - 0.5 * a.cos() + 0.08 * (2.0 * a).cos();
         g[i] = sinc * w;
     }
+
+    // Step 3: Normalize prototype gain to unity and apply complex frequency shift e^(j * 2pi * shift * k)
     let sum: f32 = g.iter().sum();
     (0..ntaps)
         .map(|i| {
