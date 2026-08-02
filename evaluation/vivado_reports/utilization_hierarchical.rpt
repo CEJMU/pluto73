@@ -1,0 +1,133 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+-----------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2022.2 (lin64) Build 3671981 Fri Oct 14 04:59:54 MDT 2022
+| Date         : Fri Jul 24 15:31:20 2026
+| Host         : PC-Lukas running 64-bit Ubuntu 20.04.6 LTS
+| Command      : report_utilization -hierarchical -hierarchical_depth 4 -file utilization_hierarchical.rpt
+| Design       : system_top
+| Device       : xc7z010clg400-1
+| Speed File   : -1
+| Design State : Routed
+-----------------------------------------------------------------------------------------------------------
+
+Utilization Design Information
+
+Table of Contents
+-----------------
+1. Utilization by Hierarchy
+
+1. Utilization by Hierarchy
+---------------------------
+
++------------------------------+-------------------------------------------------------------+------------+------------+---------+------+-------+--------+--------+------------+
+|           Instance           |                            Module                           | Total LUTs | Logic LUTs | LUTRAMs | SRLs |  FFs  | RAMB36 | RAMB18 | DSP Blocks |
++------------------------------+-------------------------------------------------------------+------------+------------+---------+------+-------+--------+--------+------------+
+| system_top                   |                                                       (top) |      13260 |      12253 |     172 |  835 | 22947 |     17 |      9 |         64 |
+|   (system_top)               |                                                       (top) |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|   i_system_wrapper           |                                              system_wrapper |      13260 |      12253 |     172 |  835 | 22947 |     17 |      9 |         64 |
+|     (i_system_wrapper)       |                                              system_wrapper |          2 |          2 |       0 |    0 |     0 |      0 |      0 |          0 |
+|     system_i                 |                                                      system |      13258 |      12251 |     172 |  835 | 22947 |     17 |      9 |         64 |
+|       (system_i)             |                                                      system |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       axi_ad9361             |                                         system_axi_ad9361_0 |       8174 |       7888 |       0 |  286 | 14251 |      0 |      0 |         28 |
+|         inst                 |                              system_axi_ad9361_0_axi_ad9361 |       8174 |       7888 |       0 |  286 | 14251 |      0 |      0 |         28 |
+|       axi_ad9361_adc_dma     |                                 system_axi_ad9361_adc_dma_0 |        382 |        348 |      34 |    0 |   660 |      1 |      0 |          0 |
+|         (axi_ad9361_adc_dma) |                                 system_axi_ad9361_adc_dma_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         inst                 |                        system_axi_ad9361_adc_dma_0_axi_dmac |        382 |        348 |      34 |    0 |   660 |      1 |      0 |          0 |
+|       axi_ad9361_dac_dma     |                                 system_axi_ad9361_dac_dma_0 |        388 |        360 |      28 |    0 |   562 |      1 |      0 |          0 |
+|         (axi_ad9361_dac_dma) |                                 system_axi_ad9361_dac_dma_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         inst                 |                        system_axi_ad9361_dac_dma_0_axi_dmac |        388 |        360 |      28 |    0 |   562 |      1 |      0 |          0 |
+|       axi_cpu_interconnect   |                               system_axi_cpu_interconnect_0 |        834 |        773 |       0 |   61 |  1163 |      0 |      0 |          0 |
+|         m07_couplers         |                                    m07_couplers_imp_1GBLMBI |         38 |         38 |       0 |    0 |   236 |      0 |      0 |          0 |
+|         m08_couplers         |                                     m08_couplers_imp_E05M9W |         37 |         37 |       0 |    0 |   236 |      0 |      0 |          0 |
+|         s00_couplers         |                                     s00_couplers_imp_WZLZH6 |        407 |        346 |       0 |   61 |   550 |      0 |      0 |          0 |
+|         xbar                 |                                               system_xbar_0 |        353 |        353 |       0 |    0 |   141 |      0 |      0 |          0 |
+|       axi_dmac_audio         |                                         system_axi_dmac_0_0 |        446 |        412 |      34 |    0 |   724 |      1 |      0 |          0 |
+|         (axi_dmac_audio)     |                                         system_axi_dmac_0_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         inst                 |                                system_axi_dmac_0_0_axi_dmac |        446 |        412 |      34 |    0 |   724 |      1 |      0 |          0 |
+|       axi_gpio_rx            |                                         system_axi_gpio_1_0 |         64 |         64 |       0 |    0 |   222 |      0 |      0 |          0 |
+|         (axi_gpio_rx)        |                                         system_axi_gpio_1_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         U0                   |                                system_axi_gpio_1_0_axi_gpio |         64 |         64 |       0 |    0 |   222 |      0 |      0 |          0 |
+|       axi_gpio_tx            |                                         system_axi_gpio_0_0 |         64 |         64 |       0 |    0 |   222 |      0 |      0 |          0 |
+|         (axi_gpio_tx)        |                                         system_axi_gpio_0_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         U0                   |                                system_axi_gpio_0_0_axi_gpio |         64 |         64 |       0 |    0 |   222 |      0 |      0 |          0 |
+|       axi_iic_main           |                                       system_axi_iic_main_0 |        380 |        370 |       0 |   10 |   374 |      0 |      0 |          0 |
+|         (axi_iic_main)       |                                       system_axi_iic_main_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         U0                   |                               system_axi_iic_main_0_axi_iic |        380 |        370 |       0 |   10 |   374 |      0 |      0 |          0 |
+|       axi_spi                |                                            system_axi_spi_0 |        358 |        346 |      12 |    0 |   535 |      0 |      0 |          0 |
+|         U0                   |                               system_axi_spi_0_axi_quad_spi |        358 |        346 |      12 |    0 |   535 |      0 |      0 |          0 |
+|       axi_tdd_0              |                                        axi_tdd_0_imp_PE8F36 |        442 |        442 |       0 |    0 |   832 |      0 |      0 |          0 |
+|         tdd_ch_slice_0       |                                     system_tdd_ch_slice_0_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         tdd_ch_slice_2       |                                     system_tdd_ch_slice_2_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         tdd_core             |                                           system_tdd_core_0 |        442 |        442 |       0 |    0 |   832 |      0 |      0 |          0 |
+|       burst_enabled          |                                          system_xlslice_0_6 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       burst_gate             |                                       system_burst_gate_0_1 |         13 |         13 |       0 |    0 |    16 |      0 |      0 |          0 |
+|         inst                 |                            system_burst_gate_0_1_burst_gate |         13 |         13 |       0 |    0 |    16 |      0 |      0 |          0 |
+|       burst_trigger          |                                          system_xlslice_0_5 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       cic_config             |                                          system_xlslice_2_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       cic_config_valid       |                                          system_xlslice_0_7 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       cpack                  |                                              system_cpack_0 |        109 |        109 |       0 |    0 |   132 |      0 |      0 |          0 |
+|         inst                 |                                  system_cpack_0_util_cpack2 |        109 |        109 |       0 |    0 |   132 |      0 |      0 |          0 |
+|       dds_valid              |                                          system_xlslice_2_1 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       dsp_mux_rx_0           |                                       system_dsp_mux_rx_0_0 |         16 |         16 |       0 |    0 |    32 |      0 |      0 |          0 |
+|         inst                 |                            system_dsp_mux_rx_0_0_dsp_mux_rx |         16 |         16 |       0 |    0 |    32 |      0 |      0 |          0 |
+|       dsp_mux_tx             |                                       system_dsp_mux_tx_0_1 |         69 |         69 |       0 |    0 |    61 |      0 |      0 |          0 |
+|         (dsp_mux_tx)         |                                       system_dsp_mux_tx_0_1 |         33 |         33 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         inst                 |                            system_dsp_mux_tx_0_1_dsp_mux_tx |         36 |         36 |       0 |    0 |    61 |      0 |      0 |          0 |
+|       logic_inv              |                                          system_logic_inv_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       or_tx_reset            |                                         system_logic_or_1_0 |          1 |          1 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       reset                  |                                          system_xlslice_0_8 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       rst_axi_ad9361_100M    |                                system_rst_axi_ad9361_100M_0 |         17 |         16 |       0 |    1 |    33 |      0 |      0 |          0 |
+|         U0                   |                 system_rst_axi_ad9361_100M_0_proc_sys_reset |         17 |         16 |       0 |    1 |    33 |      0 |      0 |          0 |
+|       rx_antenna_ctrl        |                                          system_xlslice_6_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       rx_cic_i               |                                     system_cic_compiler_0_5 |        278 |        105 |       0 |  173 |   617 |      0 |      0 |          5 |
+|         U0                   |                system_cic_compiler_0_5_cic_compiler_v4_0_16 |        278 |        105 |       0 |  173 |   617 |      0 |      0 |          5 |
+|       rx_cic_q               |                                     system_cic_compiler_0_3 |        278 |        105 |       0 |  173 |   617 |      0 |      0 |          5 |
+|         U0                   |                system_cic_compiler_0_3_cic_compiler_v4_0_16 |        278 |        105 |       0 |  173 |   617 |      0 |      0 |          5 |
+|       rx_cmpy                |                                             system_cmpy_0_0 |          2 |          2 |       0 |    0 |     5 |      0 |      0 |          4 |
+|         U0                   |                                system_cmpy_0_0_cmpy_v6_0_21 |          2 |          2 |       0 |    0 |     5 |      0 |      0 |          4 |
+|       rx_cmpy_i              |                                         system_xlslice_0_11 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       rx_cmpy_q              |                                         system_xlslice_0_12 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       rx_data_fifo           |                                   system_axis_data_fifo_0_0 |         52 |         52 |       0 |    0 |    48 |      0 |      1 |          0 |
+|         inst                 |         system_axis_data_fifo_0_0_axis_data_fifo_v2_0_9_top |         52 |         52 |       0 |    0 |    48 |      0 |      1 |          0 |
+|       rx_dds_compiler        |                                     system_dds_compiler_0_0 |         55 |         53 |       0 |    2 |   169 |      7 |      1 |          1 |
+|         U0                   |                system_dds_compiler_0_0_dds_compiler_v6_0_22 |         55 |         53 |       0 |    2 |   169 |      7 |      1 |          1 |
+|       rx_fir                 |                                     system_fir_compiler_0_0 |        164 |         83 |      32 |   49 |   338 |      0 |      3 |          2 |
+|         U0                   |                system_fir_compiler_0_0_fir_compiler_v7_2_18 |        164 |         83 |      32 |   49 |   338 |      0 |      3 |          2 |
+|       rx_iq_packer           |                                        system_iq_packer_0_0 |         66 |         66 |       0 |    0 |    65 |      0 |      0 |          0 |
+|         inst                 |                              system_iq_packer_0_0_iq_packer |         66 |         66 |       0 |    0 |    65 |      0 |      0 |          0 |
+|       rx_raw_data            |                                         system_xlconcat_0_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       sys_concat_intc        |                                    system_sys_concat_intc_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       sys_ps7                |                                            system_sys_ps7_0 |         12 |         12 |       0 |    0 |     0 |      0 |      0 |          0 |
+|         inst                 | system_sys_ps7_0_processing_system7_v5_5_processing_system7 |         12 |         12 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       sys_rstgen             |                                         system_sys_rstgen_0 |         16 |         15 |       0 |    1 |    30 |      0 |      0 |          0 |
+|         U0                   |                          system_sys_rstgen_0_proc_sys_reset |         16 |         15 |       0 |    1 |    30 |      0 |      0 |          0 |
+|       tx_antenna_ctrl        |                                          system_xlslice_2_2 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_cic_config          |                                          system_xlslice_3_1 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_cic_config_valid    |                                          system_xlslice_3_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_cic_data            |                                         system_xlconcat_1_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_cic_i               |                                     system_cic_compiler_2_0 |        137 |        121 |       0 |   16 |   321 |      0 |      0 |          4 |
+|         U0                   |                system_cic_compiler_2_0_cic_compiler_v4_0_16 |        137 |        121 |       0 |   16 |   321 |      0 |      0 |          4 |
+|       tx_cic_q               |                                     system_cic_compiler_2_1 |        137 |        121 |       0 |   16 |   321 |      0 |      0 |          4 |
+|         U0                   |                system_cic_compiler_2_1_cic_compiler_v4_0_16 |        137 |        121 |       0 |   16 |   321 |      0 |      0 |          4 |
+|       tx_cmpy                |                                             system_cmpy_1_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          4 |
+|         U0                   |                                system_cmpy_1_0_cmpy_v6_0_21 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          4 |
+|       tx_dds_compiler        |                                     system_dds_compiler_1_0 |         54 |         52 |       0 |    2 |   160 |      7 |      1 |          1 |
+|         U0                   |                system_dds_compiler_1_0_dds_compiler_v6_0_22 |         54 |         52 |       0 |    2 |   160 |      7 |      1 |          1 |
+|       tx_dds_valid           |                                       system_tx_cic_valid_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_dsp_enable          |                                         system_xlslice_0_10 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_fir                 |                                     system_fir_compiler_1_0 |        154 |         77 |      32 |   45 |   292 |      0 |      3 |          6 |
+|         U0                   |                system_fir_compiler_1_0_fir_compiler_v7_2_18 |        154 |         77 |      32 |   45 |   292 |      0 |      3 |          6 |
+|       tx_fir_i               |                                   system_xlslice_tx_fir_i_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_fir_q               |                                   system_xlslice_tx_fir_q_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_i                   |                                          system_xlslice_4_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_q                   |                                          system_xlslice_4_1 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_raw_data            |                                    system_xlconcat_tx_fir_0 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_strobe              |                                          system_xlslice_0_9 |          0 |          0 |       0 |    0 |     0 |      0 |      0 |          0 |
+|       tx_strobe_gen          |                                    system_tx_strobe_gen_0_0 |         16 |         16 |       0 |    0 |    17 |      0 |      0 |          0 |
+|         inst                 |                      system_tx_strobe_gen_0_0_tx_strobe_gen |         16 |         16 |       0 |    0 |    17 |      0 |      0 |          0 |
+|       tx_upack               |                                           system_tx_upack_0 |        114 |        114 |       0 |    0 |   128 |      0 |      0 |          0 |
+|         inst                 |                               system_tx_upack_0_util_upack2 |        114 |        114 |       0 |    0 |   128 |      0 |      0 |          0 |
++------------------------------+-------------------------------------------------------------+------------+------------+---------+------+-------+--------+--------+------------+
+* Note: The sum of lower-level cells may be larger than their parent cells total, due to cross-hierarchy LUT combining
+
+
