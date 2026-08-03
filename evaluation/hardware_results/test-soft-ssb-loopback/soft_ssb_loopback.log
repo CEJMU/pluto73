@@ -1,44 +1,32 @@
 # command: /root/diagnostics --test-soft-ssb-loopback /root/soft_ssb.wav
 === SSB DEMOD SOFTWARE TEST ===
-Pure software: modulate -> simulate FPGA -> demodulate -> WAV
+Pure software: modulate -> match DMA rate -> demodulate -> WAV
 No hardware involved.
 
-Input: 96000 samples (2.0s), tones at 500 Hz + 1500 Hz
-Modulator output: 98304 IQ samples at 48 kHz
+--- dual tone (500 Hz + 1500 Hz) ---
+  modulator output: 98304 IQ samples at 48 kHz
+    wanted     +500 Hz :   -1.2 dB
+    wanted    +1500 Hz :    0.0 dB
+    image      -500 Hz :  -76.8 dB
+    image     -1500 Hz :  -99.5 dB
+    carrier      +0 Hz : -132.0 dB
+  demodulated audio: 98304 samples at 48 kHz
+    tone        500 Hz :   -0.5 dB
+    tone       1500 Hz :    0.0 dB
+    DC residual      : -154.4 dB
+    worst spur: none clear of a tone among the 16 strongest
+    output peak: 1053.9739
+    wrote /root/soft_ssb.wav and /root/soft_ssb_input.wav
 
-Modulator output spectrum:
-   -2000 Hz:      0.0  
-   -1500 Hz:      0.0  
-   -1000 Hz:      0.0  
-    -500 Hz:      0.5  
-      +0 Hz:      0.0  
-    +500 Hz:   3271.2  ######
-   +1000 Hz:      0.0  
-   +1500 Hz:   3750.2  #######
-   +2000 Hz:      0.0  
-
-Simulating FPGA round-trip...
-  Simulated DMA: 491520 samples at 240 kHz
-  Demodulated: 98304 audio samples at 48 kHz
-
-Demodulated output spectrum:
-       0 Hz:        0.0  -86.7 dB  
-     250 Hz:        0.2  -62.8 dB  
-     500 Hz:      313.6   -0.5 dB  ############################
-     750 Hz:        0.3  -59.6 dB  
-    1000 Hz:        0.2  -63.4 dB  
-    1250 Hz:        0.4  -57.4 dB  
-    1500 Hz:      332.4    0.0 dB  ##############################
-    1750 Hz:        0.3  -59.6 dB  
-    2000 Hz:        0.1  -68.8 dB  
-    2500 Hz:        0.1  -73.7 dB  
-    3000 Hz:        0.0  -86.2 dB  
-    5000 Hz:        0.0  -95.5 dB  
-
-Output: peak=1053.9739
-Wrote: /root/soft_ssb.wav
-Wrote input reference: /root/soft_ssb_input.wav
+--- single tone (1 kHz, same stimulus as the radiated measurement) ---
+  modulator output: 98304 IQ samples at 48 kHz
+    wanted    +1000 Hz :    0.0 dB
+    image     -1000 Hz :  -87.6 dB
+    carrier      +0 Hz : -138.5 dB
+  demodulated audio: 98304 samples at 48 kHz
+    tone       1000 Hz :    0.0 dB
+    DC residual      : -161.5 dB
+    worst spur beyond 250 Hz of a tone: 749 Hz at -72.0 dBc
+    output peak: 1490.3042
 
 === SSB DEMOD TEST COMPLETE ===
-Compare /root/soft_ssb.wav (demodulated) vs /root/soft_ssb_input.wav (original)
-Expected: tones at 500 Hz and 1500 Hz in both files.
