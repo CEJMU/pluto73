@@ -1,5 +1,5 @@
 import { formatFrequency, formatHzToMhz, formatHzToMhzPrecise, formatHzShort } from './format.js';
-import { playAudioChunk, initAudioUI, setAudioSampleRate, applyServerAudioState } from './audio.js';
+import { playAudioChunk, initAudioUI, setAudioSampleRate, applyServerAudioState, applySquelchState } from './audio.js';
 import { initTx, syncTxToRx, applyConnectionState, reassertTxState, setTxAudioSampleRate } from './tx.js';
 import { FRAME_TYPE, HEADER_BYTES } from './framing.js';
 
@@ -480,6 +480,10 @@ function handleSettingsUpdate(payload) {
 
   if (payload.audio_enabled !== undefined) {
     applyServerAudioState(payload.audio_enabled);
+  }
+
+  if (payload.rx_squelch_db !== undefined) {
+    applySquelchState(payload.rx_squelch_db);
   }
 
   if (waterfallSpeedSelect && payload.waterfall_interval_ms !== undefined) {

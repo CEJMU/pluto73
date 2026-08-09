@@ -273,7 +273,7 @@ pub fn run_narrowband_loopback(rate_hz: i64, _secs: f32) -> Result<(), Box<dyn s
             i_ch.clear();
             q_ch.clear();
             if !iq.is_empty() {
-                proc.process(iq, &mut audio);
+                proc.process(iq, &mut audio, -100.0);
             }
         }
         audio

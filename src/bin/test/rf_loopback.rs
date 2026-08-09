@@ -283,7 +283,7 @@ pub fn run_rf_audio_loopback(
             q_ch.clear();
 
             if !sliced_iq.is_empty() {
-                audio_processor.process(sliced_iq, &mut audio_buffer);
+                audio_processor.process(sliced_iq, &mut audio_buffer, -100.0);
             }
 
             if audio_buffer.len() >= 4096 {
@@ -538,7 +538,7 @@ pub fn run_rf_tone_loopback(
             q_ch.clear();
 
             if !sliced_iq.is_empty() {
-                audio_processor.process(sliced_iq, &mut audio_buffer);
+                audio_processor.process(sliced_iq, &mut audio_buffer, -100.0);
             }
 
             if audio_buffer.len() >= 4096 {

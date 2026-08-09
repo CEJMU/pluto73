@@ -18,6 +18,7 @@ pub struct AudioConfig {
     pub demod_mode: Demodulation,
     pub if_cutoff_hz: f32,
     pub fs_hz: i64,
+    pub squelch_threshold_db: f32,
 }
 
 /// Updates the hardware AXI DDS phase increment and the receiver software demodulator settings
@@ -248,7 +249,7 @@ pub fn spawn_audio_thread(
 
             if !sliced_iq.is_empty() {
                 if let Some(processor) = &mut audio_processor {
-                    processor.process(sliced_iq, &mut audio_buffer);
+                    processor.process(sliced_iq, &mut audio_buffer, config.squelch_threshold_db);
                 }
             }
 

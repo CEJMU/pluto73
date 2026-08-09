@@ -157,7 +157,15 @@ async function setMutedState(muted, fromServer = false) {
   }
 }
 
-// Wires the volume slider and mute checkbox. Called once from the core after load.
+const squelchSlider = document.getElementById('squelch-slider');
+const squelchVal = document.getElementById('squelch-val');
+
+export function applySquelchState(thresholdDb) {
+  if (squelchSlider) squelchSlider.value = thresholdDb;
+  if (squelchVal) squelchVal.textContent = thresholdDb <= -99 ? 'Off' : `${thresholdDb.toFixed(0)} dB`;
+}
+
+// Wires the volume slider, mute checkbox, and squelch controls. Called once from the core after load.
 export function initAudioUI() {
   volumeSlider.addEventListener('input', async (e) => {
     const val = parseInt(e.target.value, 10);
@@ -191,4 +199,12 @@ export function initAudioUI() {
     }
     await setMutedState(muted);
   });
+
+  if (squelchSlider) {
+    squelchSlider.addEventListener('input', (e) => {
+      const db = parseFloat(e.target.value);
+      if (squelchVal) squelchVal.textContent = db <= -99 ? 'Off' : `${db.toFixed(0)} dB`;
+      sendCommand({ type: 'SetRxSquelch', payload: { threshold_db: db } });
+    });
+  }
 }

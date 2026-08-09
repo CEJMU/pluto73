@@ -1076,7 +1076,7 @@ fn run_combo(
             i_ch.clear();
             q_ch.clear();
             if !sliced_iq.is_empty() {
-                audio_processor.process(sliced_iq, &mut audio_buffer);
+                audio_processor.process(sliced_iq, &mut audio_buffer, -100.0);
             }
             if audio_buffer.len() >= 4096 {
                 all_audio.extend_from_slice(&audio_buffer);

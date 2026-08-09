@@ -211,7 +211,21 @@ impl AudioProcessor {
         }
     }
 
-    pub fn process(&mut self, samples: Vec<Complex32>, audio_buffer: &mut Vec<f32>) {
+    pub fn process(
+        &mut self,
+        samples: Vec<Complex32>,
+        audio_buffer: &mut Vec<f32>,
+        squelch_threshold_db: f32,
+    ) {
+        // Squelch
+        let squelch_mute = if squelch_threshold_db > -99.0 && !samples.is_empty() {
+            let p_raw = samples.iter().map(|c| c.norm_sqr()).sum::<f32>() / samples.len() as f32;
+            let power_db = 10.0 * (p_raw + 1e-12).log10();
+            power_db < squelch_threshold_db
+        } else {
+            false
+        };
+
         match self {
             AudioProcessor::FM {
                 chain,
@@ -236,7 +250,9 @@ impl AudioProcessor {
                         let dc_blocked = base_audio - *dc_blocker_x + 0.995 * *dc_blocker_y;
                         *dc_blocker_x = base_audio;
                         *dc_blocker_y = dc_blocked;
-                        audio_buffer.push(dc_blocked);
+
+                        let final_audio = if squelch_mute { 0.0 } else { dc_blocked };
+                        audio_buffer.push(final_audio);
                     }
                 }
             }
@@ -252,7 +268,9 @@ impl AudioProcessor {
                     let dc_blocked = base_audio - *dc_blocker_x + 0.995 * *dc_blocker_y;
                     *dc_blocker_x = base_audio;
                     *dc_blocker_y = dc_blocked;
-                    audio_buffer.push(dc_blocked);
+
+                    let final_audio = if squelch_mute { 0.0 } else { dc_blocked };
+                    audio_buffer.push(final_audio);
                 }
             }
         }

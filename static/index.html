@@ -167,6 +167,19 @@
             <label for="mute-checkbox">Mute:</label>
             <input type="checkbox" id="mute-checkbox" checked disabled />
           </div>
+          <div class="control-group ml-15">
+            <label for="squelch-slider" title="Power Squelch: Mutes background static when signal is below threshold">Squelch:</label>
+            <input
+              type="range"
+              id="squelch-slider"
+              min="-100"
+              max="-10"
+              value="-88"
+              step="1"
+              title="Squelch Threshold (-100 dB = Off)"
+            />
+            <span id="squelch-val" class="readout">-88 dB</span>
+          </div>
         </div>
       </div>
 

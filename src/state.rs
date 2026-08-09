@@ -58,6 +58,7 @@ pub struct ControlState {
     /// When set, the wideband waterfall burst is also streamed to clients as raw i16 I/Q. Opt-in
     /// (off by default) so the normal web UI pays no bandwidth cost; enabled by `SetRxIqStream`.
     pub iq_stream_enabled: bool,
+    pub rx_squelch_db: f32,
 }
 
 impl ControlState {
@@ -76,6 +77,7 @@ impl ControlState {
             rf_bandwidth_hz: 0,
             tx_offset_hz: crate::DEFAULT_TX_OFFSET_HZ,
             iq_stream_enabled: false,
+            rx_squelch_db: -88.0,
         }
     }
 }

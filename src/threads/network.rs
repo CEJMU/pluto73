@@ -90,6 +90,9 @@ pub enum ControlCommand {
     SetRxIqStream {
         enabled: bool,
     },
+    SetRxSquelch {
+        threshold_db: f32,
+    },
     RequestSync,
 }
 
@@ -131,6 +134,7 @@ pub enum ServerMessage {
         waterfall_max_db: f32,
         waterfall_fft_size: usize,
         antenna: u8,
+        rx_squelch_db: f32,
     },
 }
 

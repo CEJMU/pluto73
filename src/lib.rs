@@ -300,6 +300,7 @@ fn run_device_loop(
         },
         if_cutoff_hz: 120_000.0,
         fs_hz: initial_fs_hz,
+        squelch_threshold_db: -88.0,
     }));
 
     info!("Device loop initialized");
@@ -426,6 +427,7 @@ fn run_device_loop(
                             waterfall_max_db: fft.max_db,
                             waterfall_fft_size: fft.fft_size(),
                             antenna: state.antenna,
+                            rx_squelch_db: state.rx_squelch_db,
                         });
                     }
 
@@ -547,6 +549,11 @@ fn run_device_loop(
                 ControlCommand::SetRxIqStream { enabled } => {
                     state.iq_stream_enabled = enabled;
                 }
+                ControlCommand::SetRxSquelch { threshold_db } => {
+                    state.rx_squelch_db = threshold_db;
+                    let mut cfg = audio_config.lock().unwrap();
+                    cfg.squelch_threshold_db = threshold_db;
+                }
                 ControlCommand::SetRxAntenna { antenna } => {
                     state.antenna = antenna;
                     pending_configs += 1;
@@ -648,6 +655,7 @@ fn run_device_loop(
                         waterfall_max_db: fft.max_db,
                         waterfall_fft_size: fft.fft_size(),
                         antenna: state.antenna,
+                        rx_squelch_db: state.rx_squelch_db,
                     });
                 }
             }
@@ -695,6 +703,7 @@ fn run_device_loop(
                             waterfall_max_db: fft.max_db,
                             waterfall_fft_size: fft.fft_size(),
                             antenna: state.antenna,
+                            rx_squelch_db: state.rx_squelch_db,
                         });
                     }
 

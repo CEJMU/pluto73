@@ -151,7 +151,7 @@ fn run_case(
             &dma_q[chunk_start..chunk_end],
         );
         if !sliced_iq.is_empty() {
-            audio_processor.process(sliced_iq, &mut audio_output);
+            audio_processor.process(sliced_iq, &mut audio_output, -100.0);
         }
     }
 

@@ -91,7 +91,17 @@ function sendTxModulation(mode, bwHz) {
   updateStatusBar();
 }
 
+let txMicNodes = [];
+
+function cleanupMicNodes() {
+  for (const node of txMicNodes) {
+    try { node.disconnect(); } catch (_) {}
+  }
+  txMicNodes = [];
+}
+
 function stopTx() {
+  cleanupMicNodes();
   if (txStream) {
     txStream.getTracks().forEach(track => track.stop());
     txStream = null;
@@ -152,9 +162,35 @@ async function startMicTx() {
     }
 
     console.log("[TX Client] Requesting microphone access...");
-    txStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    try {
+      txStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: true,
+        }
+      });
+    } catch (e) {
+      console.warn("[TX Client] Mic constraints failed, using default audio constraints:", e);
+      txStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
     console.log("[TX Client] Microphone access granted. Connecting audio nodes.");
+    cleanupMicNodes();
     const source = txAudioCtx.createMediaStreamSource(txStream);
+
+    const compressor = txAudioCtx.createDynamicsCompressor();
+    compressor.threshold.value = -12.0; // Smoothly compress peaks above -12 dBFS
+    compressor.knee.value = 8.0;        // Smooth transition knee
+    compressor.ratio.value = 4.0;       // 4:1 voice compression
+    compressor.attack.value = 0.003;    // Fast attack
+    compressor.release.value = 0.080;
+
+    // Unity gain node (1.0 / 0 dB) so signal stays within full-scale range without clipping
+    const micGainNode = txAudioCtx.createGain();
+    micGainNode.gain.value = 1.0;
+
+    const zeroGainNode = txAudioCtx.createGain();
+    zeroGainNode.gain.value = 0.0;
 
     txProcessor = new AudioWorkletNode(txAudioCtx, 'tx-processor');
     txProcessor.port.onmessage = (event) => {
@@ -162,8 +198,13 @@ async function startMicTx() {
       sendTxAudioChunk(new Float32Array(event.data));
     };
 
-    source.connect(txProcessor);
-    txProcessor.connect(txAudioCtx.destination);
+    source.connect(compressor);
+    compressor.connect(micGainNode);
+    micGainNode.connect(txProcessor);
+    txProcessor.connect(zeroGainNode);
+    zeroGainNode.connect(txAudioCtx.destination);
+
+    txMicNodes = [source, compressor, micGainNode, zeroGainNode];
 
     isTransmitting = true;
     txStatusLabel.textContent = "TX: MIC (Live)";
@@ -175,6 +216,7 @@ async function startMicTx() {
     sendTxState(true);
   } catch (err) {
     console.error("Error accessing microphone or initializing TX audio:", err);
+    cleanupMicNodes();
     if (txStream) {
       txStream.getTracks().forEach(track => track.stop());
       txStream = null;
