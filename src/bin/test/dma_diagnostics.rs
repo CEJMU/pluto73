@@ -556,7 +556,9 @@ pub fn run_dma_continuity() -> Result<(), Box<dyn std::error::Error>> {
         dma_fs / 1000.0
     );
     let (i_data, q_data) = capture_audio_dma(&system, &stop, dur)?;
-    analyze_continuity(&i_data, &q_data, dma_fs, MAX_AUDIO_SAMPLES);
+
+    let dma_buf_samples = { system.lock().unwrap().audio_dma_samples };
+    analyze_continuity(&i_data, &q_data, dma_fs, dma_buf_samples);
 
     let _ = tx.set_gain(-89.75);
 

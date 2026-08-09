@@ -37,6 +37,8 @@ const GPIO_TX_PHYS_ADDR: u64 = 0x4120_0000;
 // Register base address of the AD9361 RF transceiver interface core
 const AD9361_PHYS_ADDR: u64 = 0x7902_0000;
 
+/// Bounds on the audio DMA transfer length
+pub const MIN_AUDIO_SAMPLES: usize = 1024;
 pub const MAX_AUDIO_SAMPLES: usize = 16384;
 
 /// AD9361 minimum baseband sample rate. Below this the internal FIR must be enabled.
@@ -158,6 +160,7 @@ pub struct PlutoSystem {
     pub is_configuring: bool,
     pub dma_running: bool,
     pub ping_pong: bool,
+    pub audio_dma_samples: usize,
 }
 
 // SAFETY: The underlying `industrial-io` (libiio) bindings wrap raw C pointers which do not
@@ -845,6 +848,9 @@ impl PlutoSystem {
         self.rx_antenna = rx_antenna;
         self.rx_cic_decimation = rx_cic_decimation_for_rate(rx_fs);
 
+        self.audio_dma_samples =
+            audio_dma_samples_for_rate(rx_fs / (4 * self.rx_cic_decimation as i64));
+
         // Release AD9361 core resets by writing 3 to offset 0x40
         self.write_ad9361(0x40, 3);
 
@@ -1028,16 +1034,17 @@ impl PlutoSystem {
 
     /// Queues initial ping-pong DMA transfer descriptors if the DMA engine is currently stopped.
     pub fn ensure_dma_running(&mut self) {
-        let max_bytes: u32 = (MAX_AUDIO_SAMPLES * 4) as u32;
-        let current_offset = if self.ping_pong { max_bytes } else { 0 };
-        let next_offset = if !self.ping_pong { max_bytes } else { 0 };
+        let stride: u32 = (MAX_AUDIO_SAMPLES * 4) as u32;
+        let len_bytes: u32 = (self.audio_dma_samples * 4) as u32;
+        let current_offset = if self.ping_pong { stride } else { 0 };
+        let next_offset = if !self.ping_pong { stride } else { 0 };
 
         if !self.dma_running {
             self.write_dma(DMA_REG_IRQ_PENDING, 0xFFFFFFFF);
 
             // Queue both ping-pong transfers; leave the DMA stopped if the DMAC won't accept them.
-            if !self.submit_dma_transfer(current_offset, max_bytes)
-                || !self.submit_dma_transfer(next_offset, max_bytes)
+            if !self.submit_dma_transfer(current_offset, len_bytes)
+                || !self.submit_dma_transfer(next_offset, len_bytes)
             {
                 return;
             }
@@ -1082,15 +1089,16 @@ impl PlutoSystem {
             return None;
         }
 
-        let max_bytes: u32 = (MAX_AUDIO_SAMPLES * 4) as u32;
-        let current_offset = if self.ping_pong { max_bytes } else { 0 };
+        let stride: u32 = (MAX_AUDIO_SAMPLES * 4) as u32;
+        let len_bytes: u32 = (self.audio_dma_samples * 4) as u32;
+        let current_offset = if self.ping_pong { stride } else { 0 };
 
         // Clear DMA Interrupt unconditionally
         self.write_dma(DMA_REG_IRQ_PENDING, 0xFFFFFFFF);
 
         // Queue the next transfer into current_offset (the buffer we just finished) BEFORE reading
         // it, to keep the 2-deep hardware queue full and never underrun
-        if !self.submit_dma_transfer(current_offset, max_bytes) {
+        if !self.submit_dma_transfer(current_offset, len_bytes) {
             return None;
         }
 
@@ -1101,7 +1109,7 @@ impl PlutoSystem {
         };
 
         self.ping_pong = !self.ping_pong;
-        Some((MAX_AUDIO_SAMPLES, ram_ptr))
+        Some((self.audio_dma_samples, ram_ptr))
     }
 
     /// Submits one DMA transfer descriptor (dest address + length) to the AXI DMAC's
@@ -1314,6 +1322,7 @@ fn init_mem_system() -> Result<PlutoSystem, Box<dyn std::error::Error>> {
         is_configuring: false,
         dma_running: false,
         ping_pong: false,
+        audio_dma_samples: MAX_AUDIO_SAMPLES,
     })
 }
 
@@ -1337,6 +1346,23 @@ pub fn tx_strobe_phase_inc(fs: f64) -> u32 {
 /// This is the RX counterpart to the TX rate math in tx_apply_dsp_config.
 pub fn rx_cic_decimation_for_rate(rx_fs: i64) -> u32 {
     ((rx_fs / 960_000).clamp(4, 64) as u32).next_power_of_two()
+}
+
+/// Audio DMA transfer length (in I/Q samples) for the intermediate rate `dma_fs` the fabric
+/// delivers. Targets 68ms for buffer fills.
+///
+/// Returns the largest power of two whose duration does not exceed `TARGET_MS`, clamped to
+/// [`MIN_AUDIO_SAMPLES`, `MAX_AUDIO_SAMPLES`]. Powers of two keep the ping-pong halves aligned.
+pub fn audio_dma_samples_for_rate(dma_fs: i64) -> usize {
+    const TARGET_MS: i64 = 90;
+    let target = (dma_fs * TARGET_MS / 1000).max(1) as usize;
+    // Largest power of two <= target (`next_power_of_two` returns `target` itself when it is one).
+    let pow2 = if target.is_power_of_two() {
+        target
+    } else {
+        target.next_power_of_two() >> 1
+    };
+    pow2.clamp(MIN_AUDIO_SAMPLES, MAX_AUDIO_SAMPLES)
 }
 
 /// Rounds a requested TX baseband rate to a clean multiple of 192 kHz (48 kHz x 4x FIR interpolation).

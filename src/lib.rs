@@ -247,11 +247,11 @@ fn run_device_loop(
         .reset_device_state()
         .map_err(|err| format!("Config error: {}", err))?;
 
-    let mut device = pluto.rx;
+    let mut rx_device = pluto.rx;
     let mut tx_device = pluto.tx;
     let mut system_device = pluto.system;
 
-    device.sampling_frequency = initial_fs_hz;
+    rx_device.sampling_frequency = initial_fs_hz;
 
     system_device.rx_apply_dsp_config(initial_antenna, initial_fs_hz);
     system_device.tx_apply_dsp_config(tx_device.antenna, initial_fs_hz as f64);
@@ -259,16 +259,16 @@ fn run_device_loop(
 
     let system = Arc::new(Mutex::new(system_device));
 
-    device
+    rx_device
         .set_antenna(initial_antenna)
         .map_err(|err| format!("Config error: {}", err))?;
-    let (initial_lo_readback, initial_fs_readback) = device
+    let (initial_lo_readback, initial_fs_readback) = rx_device
         .set_frequencies(initial_lo_hz, initial_fs_hz)
         .map_err(|err| format!("Config error: {}", err))?;
-    let initial_rf_bw_readback = device
+    let initial_rf_bw_readback = rx_device
         .set_rf_bandwidth(initial_bw_hz)
         .map_err(|err| format!("Config error: {}", err))?;
-    device
+    rx_device
         .init_channels()
         .map_err(|err| format!("Failed to init channels: {}", err))?;
     tx_device
@@ -368,7 +368,7 @@ fn run_device_loop(
 
     // RX IO thread: reads raw RX DMA buffers and telemetry.
     let _rx_io_thread = spawn_rx_io_thread(
-        device,
+        rx_device,
         shutdown_io,
         is_running_io,
         rx_io_cmd_rx,

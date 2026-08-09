@@ -11,7 +11,7 @@ const FILTER_BW: f32 = 3_000.0;
 const INTERP: usize = 5;
 /// How far either side of a wanted tone the spur search ignores.
 ///
-/// This has to be wide because `dominant_tone_spurs` applies a Hamming window: 
+/// This has to be wide because `dominant_tone_spurs` applies a Hamming window:
 /// its first sidelobe is about -43 dB and the skirt then falls off slowly, so close to a full-scale tone the analysis window dominates whatever the chain itself produced.
 /// With a 10 Hz exclusion the search duly reported "spurs" at 514 Hz and 989 Hz at roughly -47 dBc, both 14 Hz from a tone, both pure window skirt.
 /// At 250 Hz the reading is a real one: 749 Hz at -72 dBc for the single-tone case.

@@ -24,6 +24,7 @@ const muteCheckbox = document.getElementById('mute-checkbox');
 const hoverTooltip = document.getElementById('hover-tooltip');
 
 const txOffsetInput = document.getElementById('tx-offset');
+const setTxOffsetButton = document.getElementById('set-tx-offset');
 
 const rxGainModeSelect = document.getElementById('rx-gain-mode');
 const rxGainSlider = document.getElementById('rx-gain');
@@ -1358,8 +1359,8 @@ if (txGainSlider) {
   });
 }
 
-if (txOffsetInput) {
-  txOffsetInput.addEventListener('change', () => {
+if (setTxOffsetButton && txOffsetInput) {
+  setTxOffsetButton.addEventListener('click', () => {
     let hz = parseInt(txOffsetInput.value, 10);
     if (Number.isNaN(hz)) {
       txOffsetInput.value = txOffsetHz;
