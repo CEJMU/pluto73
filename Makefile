@@ -12,6 +12,12 @@ SHELL     := /bin/bash
 FW_DIR    := $(ROOT)plutoplus/plutosdr-fw
 SYSROOT   := $(FW_DIR)/buildroot/output/host/arm-buildroot-linux-gnueabihf/sysroot
 
+# --- Versioning & Release ----------------------------------------------------
+FW_VERSION       = $(shell git -C $(FW_DIR) describe --abbrev=4 --dirty --always --tags)
+APP_VERSION      = $(shell sed -n 's/^version = "\(.*\)"/\1/p' $(ROOT)Cargo.toml)
+RELEASE_ZIP_NAME = plutoplus-fw-$(FW_VERSION)-$(APP_VERSION).zip
+
+
 # --- Toolchains (adjust to your environment) ---------------------------------
 CROSS_COMPILE_PATH := /opt/toolchains/gcc-linaro-7.3.1-2018.05-x86_64_arm-linux-gnueabihf/bin
 TOOLCHAIN_DIR      := /opt/toolchains/gcc-linaro-7.3.1-2018.05-x86_64_arm-linux-gnueabihf
@@ -125,6 +131,16 @@ bake: firmware certs      ## Cross-build the app and bake it (+ frontend + TLS c
 	$(MAKE) app
 	source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) $(FLASH_TARGETS)
 	@echo "Flashing artifacts (app baked in) ready in $(FW_DIR)/build/ ($(FLASH_TARGETS))"
+
+.PHONY: release sysroot
+release: bake             ## Build baked firmware + package release zip (boot.dfu, boot.frm, pluto.dfu, pluto.frm, uboot-env.dfu)
+	cd $(FW_DIR)/build && zip -j $(RELEASE_ZIP_NAME) boot.dfu boot.frm pluto.dfu pluto.frm uboot-env.dfu
+	@echo
+	@echo "==> Release zip ready: $(FW_DIR)/build/$(RELEASE_ZIP_NAME)"
+
+sysroot:                  ## Package the Buildroot sysroot tar.gz for this modified firmware build
+	source $(VIVADO_SETTINGS) && $(MAKE) -C $(FW_DIR) sysroot
+	@echo "==> Sysroot archive ready in $(FW_DIR)/build/"
 
 certs:                    ## Generate a self-signed TLS cert/key (skipped if cert.pem/key.pem already exist)
 	@if [ -f cert.pem ] && [ -f key.pem ]; then \
