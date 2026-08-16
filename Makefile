@@ -151,7 +151,7 @@ distclean: clean          ## clean + revert ALL patches, resetting the submodule
 # =============================================================================
 # Rust host application
 # =============================================================================
-.PHONY: app deploy run debug local ssh app-diagnostics deploy-diagnostics run-diagnostics
+.PHONY: app app-cross deploy deploy-cross run run-cross debug local ssh app-diagnostics deploy-diagnostics run-diagnostics
 local:                    ## Build+run the app natively on the host (needs host libiio)
 	cargo run
 
@@ -165,10 +165,24 @@ deploy-diagnostics: app-diagnostics ## Deploy the diagnostics binary to the Plut
 run-diagnostics: deploy-diagnostics ## Deploy + run the diagnostics on the Pluto device (e.g., ARGS="--test-spec-audio-sweep")
 	ssh -t $(TARGET_USER)@$(TARGET_IP) "$(TARGET_DIR)diagnostics $(ARGS)"
 
-app:                      ## Cross-compile the app for the Pluto (armv7); needs the buildroot sysroot
+app:                      ## Compile the app natively for the Pluto (armv7); needs host Linaro toolchain and buildroot
 	cargo build --target $(TARGET_ARCH) --release
 
-deploy: app certs         ## Cross-compile + copy binary, TLS certs, and static/ to the device
+app-cross:                ## Cross-compile the app inside the Docker container
+ifeq ($(OS),Windows_NT)
+	cross-compile\make.bat app
+else
+	./cross-compile/make.sh app
+endif
+
+deploy: app certs         ## Native compile + copy binary, TLS certs, and static/ to the device
+	ssh -t $(TARGET_USER)@$(TARGET_IP) "killall -q $(BINARY_NAME) || true;"
+	scp target/$(TARGET_ARCH)/release/$(BINARY_NAME) $(TARGET_USER)@$(TARGET_IP):$(TARGET_DIR)
+	scp cert.pem key.pem $(TARGET_USER)@$(TARGET_IP):$(TARGET_DIR)
+	scp -r static $(TARGET_USER)@$(TARGET_IP):$(TARGET_DIR)
+	@echo "Deployed to $(TARGET_DIR)$(BINARY_NAME) on $(TARGET_IP)"
+
+deploy-cross: app-cross certs ## Docker cross-compile + copy binary, TLS certs, and static/ to the device
 	ssh -t $(TARGET_USER)@$(TARGET_IP) "killall -q $(BINARY_NAME) || true;"
 	scp target/$(TARGET_ARCH)/release/$(BINARY_NAME) $(TARGET_USER)@$(TARGET_IP):$(TARGET_DIR)
 	scp cert.pem key.pem $(TARGET_USER)@$(TARGET_IP):$(TARGET_DIR)
@@ -176,10 +190,13 @@ deploy: app certs         ## Cross-compile + copy binary, TLS certs, and static/
 	@echo "Deployed to $(TARGET_DIR)$(BINARY_NAME) on $(TARGET_IP)"
 
 run: deploy               ## Deploy + execute the app on the device (foreground)
-	ssh -t $(TARGET_USER)@$(TARGET_IP) "$(TARGET_DIR)$(BINARY_NAME)"
+	ssh -t $(TARGET_USER)@$(TARGET_IP) "$(TARGET_DIR)$(BINARY_NAME) $(ARGS)"
+
+run-cross: deploy-cross   ## Docker cross-compile + deploy + execute on the device (foreground)
+	ssh -t $(TARGET_USER)@$(TARGET_IP) "$(TARGET_DIR)$(BINARY_NAME) $(ARGS)"
 
 debug: deploy             ## Deploy + run on the device with debug logging (RUST_LOG=debug)
-	ssh -t $(TARGET_USER)@$(TARGET_IP) "RUST_LOG=debug $(TARGET_DIR)$(BINARY_NAME)"
+	ssh -t $(TARGET_USER)@$(TARGET_IP) "RUST_LOG=debug $(TARGET_DIR)$(BINARY_NAME) $(ARGS)"
 
 ssh:                      ## Reset the device's known_hosts entry and install your SSH key
 	ssh-keygen -R "$(TARGET_IP)"

@@ -154,6 +154,25 @@ make run         # deploy + run on-device
 > firmware build must precede the app cross-compile. `patch` must follow `baseline`,
 > since our diffs are cut against the Pluto+ baseline.
 
+
+#### Cross-building with Docker (macOS, Windows, or non-Linux host)
+
+If you are developing on **macOS**, **Windows**, or a **Linux host without the Linaro toolchain** installed in `/opt/toolchains`, you can cross-compile the application using the containerized toolchain in `cross-compile/`:
+
+```bash
+# 1. Build the cross-compilation Docker container (run once):
+./cross-compile/build-image.sh            # Linux / macOS
+cross-compile\build-image.bat       # Windows
+
+# 2. Build, deploy, or run using the -cross Makefile targets:
+make app-cross                            # cross-compiles binaries inside Docker container
+make deploy-cross                         # Docker build + scp binaries, certs & static/ to 192.168.2.1
+make run-cross                            # Docker build + deploy + execute remotely on device
+```
+
+For detailed information on the Docker environment and sysroot bindings, see [cross-compile/README.md](cross-compile/README.md).
+
+
 ### Cleaning up
 
 ```bash

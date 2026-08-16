@@ -5,6 +5,9 @@
 cert.pem
 key.pem
 
+# Cross-compilation toolchain tarballs
+cross-compile/*.tar.xz
+
 # Editor / OS
 *.swp
 .DS_Store
