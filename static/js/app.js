@@ -14,6 +14,8 @@ const canvas = document.getElementById('waterfallCanvas');
 const ctx = canvas.getContext('2d');
 const centerFreqInput = document.getElementById('center-freq');
 const setCenterFreqButton = document.getElementById('set-center-freq');
+const freqOffsetInput = document.getElementById('freq-offset');
+const setFreqOffsetButton = document.getElementById('set-freq-offset');
 const modeSelect = document.getElementById('mode-select');
 const filterBwInput = document.getElementById('filter-bw');
 const setFilterBwButton = document.getElementById('set-filter-bw');
@@ -122,8 +124,22 @@ function requestRedraw() {
 const MIN_LO_HZ = 70000000;
 const MAX_LO_HZ = 6000000000;
 
+// Converter/transverter support: every frequency in the UI is at the converter input ("dial" = hardware + offset)
+// The offset is subtracted at the sendCommand and added to incoming Config/Settings frequencies
+const FREQ_OFFSET_STORAGE_KEY = 'freqOffsetHz';
+let freqOffsetHz = (() => {
+  const stored = parseInt(localStorage.getItem(FREQ_OFFSET_STORAGE_KEY), 10);
+  return Number.isFinite(stored) ? stored : 0;
+})();
+let minLoHz = MIN_LO_HZ + freqOffsetHz;
+let maxLoHz = MAX_LO_HZ + freqOffsetHz;
+
 function isValidLoHz(hz) {
-  return typeof hz === 'number' && !Number.isNaN(hz) && hz >= MIN_LO_HZ && hz <= MAX_LO_HZ;
+  return typeof hz === 'number' && !Number.isNaN(hz) && hz >= minLoHz && hz <= maxLoHz;
+}
+
+function alertTuningRange() {
+  alert(`The tunable range is ${formatFrequency(minLoHz)} to ${formatFrequency(maxLoHz)}.\nPlease enter a value between ${minLoHz} and ${maxLoHz}.`);
 }
 
 function isEmptyRow(row) {
@@ -333,11 +349,27 @@ function updateWaterfallScale() {
 }
 
 // --- WebSocket Connection & Communication ---
+
+// Commands carrying absolute frequencies are authored in the dial domain; convert them to
+// hardware frequencies at the wire boundary.
+function toHardwareDomain(command) {
+  if (freqOffsetHz === 0) return command;
+  const { type, payload } = command;
+  if (type === 'SetRxFrequency' || type === 'SetRxCenterFrequency') {
+    return { type, payload: { ...payload, hz: payload.hz - freqOffsetHz } };
+  }
+  if (type === 'SetRxSpan') {
+    return { type, payload: { ...payload, center_hz: payload.center_hz - freqOffsetHz } };
+  }
+  return command;
+}
+
 function sendCommand(command) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     console.warn('WebSocket not open');
     return;
   }
+  command = toHardwareDomain(command);
   console.log('[WS Control Command]', command);
   ws.send(JSON.stringify(command));
 }
@@ -392,7 +424,7 @@ function handleTextMessage(data) {
 
 function handleConfigUpdate(payload) {
   const prevSampleRateHz = sdrBandwidthHz;
-  sdrHardwareLoHz = payload.lo_hz;
+  sdrHardwareLoHz = payload.lo_hz + freqOffsetHz;
   hardwareLoHz = sdrHardwareLoHz;
   sdrBandwidthHz = payload.sample_rate_hz;
 
@@ -466,7 +498,7 @@ function handleConfigUpdate(payload) {
 function handleSettingsUpdate(payload) {
   console.log('[WS Settings Update] Received active settings from server:', payload);
   if (frequencyInput && payload.playback_hz !== undefined) {
-    frequencyInput.value = payload.playback_hz;
+    frequencyInput.value = payload.playback_hz + freqOffsetHz;
   }
 
   if (modeSelect && payload.demod_mode) {
@@ -1065,7 +1097,7 @@ canvas.addEventListener('mousemove', (e) => {
         sendCommand({ type: 'SetRxFrequency', payload: { hz: carrierHz } });
       }, 50);
     } else if (isDraggingBar === 'lo') {
-      hardwareLoHz = Math.max(MIN_LO_HZ, Math.min(MAX_LO_HZ, Math.round(freqHz)));
+      hardwareLoHz = Math.max(minLoHz, Math.min(maxLoHz, Math.round(freqHz)));
     } else if (isDraggingBar === 'txlo') {
       if (!Number.isNaN(listeningHz)) {
         txOffsetHz = clampTxOffset(Math.round(listeningHz - freqHz));
@@ -1241,7 +1273,7 @@ window.addEventListener('keydown', (e) => {
     } else {
       currentCenterHz += panStepHz;
     }
-    currentCenterHz = Math.max(MIN_LO_HZ, Math.min(MAX_LO_HZ, currentCenterHz));
+    currentCenterHz = Math.max(minLoHz, Math.min(maxLoHz, currentCenterHz));
 
     requestRedraw();
 
@@ -1267,7 +1299,7 @@ setFreqButton.addEventListener('click', () => {
   const hz = parseInt(frequencyInput.value, 10);
   if (!Number.isNaN(hz)) {
     if (!isValidLoHz(hz)) {
-      alert(`The Pluto+ (AD9361) tuning range is 70 MHz to 6.0 GHz.\nPlease enter a value between ${MIN_LO_HZ} and ${MAX_LO_HZ}.`);
+      alertTuningRange();
       return;
     }
     sendCommand({ type: 'SetRxFrequency', payload: { hz } });
@@ -1448,13 +1480,46 @@ setCenterFreqButton.addEventListener('click', () => {
     armSettleFallback(500);
     sendCommand({ type: 'SetRxCenterFrequency', payload: { hz } });
   } else {
-    alert(`The Pluto+ (AD9361) tuning range is 70 MHz to 6.0 GHz.\nPlease enter a value between ${MIN_LO_HZ} and ${MAX_LO_HZ}.`);
+    alertTuningRange();
   }
 });
+
+// The hardware stays put when the converter offset changes; only the dial labels move. Shift the
+// dial-domain view state by the delta, then re-sync the input fields
+function applyFreqOffset(newOffsetHz) {
+  const delta = newOffsetHz - freqOffsetHz;
+  freqOffsetHz = newOffsetHz;
+  minLoHz = MIN_LO_HZ + freqOffsetHz;
+  maxLoHz = MAX_LO_HZ + freqOffsetHz;
+  localStorage.setItem(FREQ_OFFSET_STORAGE_KEY, String(freqOffsetHz));
+  if (delta === 0) return;
+  currentCenterHz += delta;
+  hardwareLoHz += delta;
+  sdrHardwareLoHz += delta;
+  if (frequencyInput) {
+    const listeningHz = parseInt(frequencyInput.value);
+    if (Number.isFinite(listeningHz)) frequencyInput.value = listeningHz + delta;
+  }
+  syncCenterFreqInput();
+  requestRedraw();
+  sendCommand({ type: 'RequestSync' });
+}
+
+if (setFreqOffsetButton) {
+  setFreqOffsetButton.addEventListener('click', () => {
+    const hz = parseInt(freqOffsetInput.value);
+    if (Number.isFinite(hz)) {
+      applyFreqOffset(hz);
+    } else {
+      freqOffsetInput.value = freqOffsetHz;
+    }
+  });
+}
 
 // --- Application Initialization ---
 frequencyInput.value = currentCenterHz;
 centerFreqInput.value = currentCenterHz;
+if (freqOffsetInput) freqOffsetInput.value = freqOffsetHz;
 updateRunStatusBadge();
 
 function resizeCanvas() {
