@@ -468,7 +468,6 @@ proc create_root_design { parentCell } {
   set_property -dict [list \
     CONFIG.C_ALL_OUTPUTS {1} \
     CONFIG.C_ALL_OUTPUTS_2 {1} \
-    CONFIG.C_DOUT_DEFAULT {0x00000004} \
     CONFIG.C_GPIO2_WIDTH {32} \
     CONFIG.C_GPIO_WIDTH {32} \
     CONFIG.C_IS_DUAL {1} \
