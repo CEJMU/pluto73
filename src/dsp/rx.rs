@@ -52,7 +52,7 @@ impl FilterAudio {
         // a contiguous slice of length `num_taps` starting at `h_idx` always represents the last
         // `num_taps` samples in correct chronological order. This eliminates the need to either
         // shift elements (expensive O(N) copy) or handle circular buffer wrap-arounds inside the
-        // hot path convolution loop (which prevents cache-friendly SIMD auto-vectorization).
+        // hot path convolution loop
         let new_len = num_taps * 2;
         if self.history_re.len() != new_len {
             self.history_re = vec![0.0; new_len];
@@ -123,8 +123,7 @@ impl FilterAudio {
 
                 // Because of the double-buffer layout, we can grab a contiguous slice representing
                 // the last num_taps samples in correct order starting directly at the current h_idx.
-                // This contiguous access is highly friendly to CPU caches and compilers trying to auto-vectorize
-                // the convolution loop below.
+                // This contiguous access is highly friendly to CPU caches and compilers trying to optimize it
                 let window_re = &self.history_re[h_idx..h_idx + num_taps];
                 let window_im = &self.history_im[h_idx..h_idx + num_taps];
                 let taps = &self.taps[..num_taps];
