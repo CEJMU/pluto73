@@ -189,3 +189,17 @@ write_bd_tcl <this_repo>/hdl_bd/system_bd_design.tcl
 ```
 
 For edits to *tracked* firmware files (device trees, constraints, the wrapper), run `make collect` to regenerate the patches.
+
+
+## Results & Next steps based on QO-100 live test (14.10.2026)
+
+- Setup: Used offset frequency `~9750000000Hz = ~ 9.75 Ghz`
+- SSB voice reception works in practice.
+  - Incremental tuning and additional noise suppression still needed for easy, clear audio reception, see Thesis 10.1
+- Transmitted audio is too weak to be received and heard clearly over the QO-100 path.
+  - A transmitted 400 Hz test tone is barely visible on the frequency display and is not audible.
+  - Possible causes and next steps:
+    - Measure the Pluto+'s actual output signal strength (e.g an oscilloscope).
+    - Recheck the software SSB modulation algorithm (`dsp/tx.rs`) and TX audio path (`threads/tx_io.rs`, `threads/tx_dsp.rs`) to verify the digitally generated signal and its level.
+    - Investigate the FPGA TX signal path, including the FIR and CIC filters through further hardware tests or digital simulation.
+    - Verify that the audio received from the browser is correct and has a sufficient level.
